@@ -19,14 +19,13 @@ type IrcConnection struct {
 	nick       string
 	user       string
 	real       string
-	channel    string
 }
 
 func NewIrcConnection(socket string, nick string, user string, real string) (*IrcConnection, error) {
 	if newconn, err := tp.Dial("tcp", socket); err != nil {
 		return nil, err
 	} else {
-		ic := IrcConnection{newconn, time.Now(), time.Now(), "", "", "", ""}
+		ic := IrcConnection{newconn, time.Now(), time.Now(), "", "", ""}
 		ic.setNick(nick)
 		ic.setUserReal(user, real)
 		return &ic, err
@@ -37,6 +36,14 @@ func NewIrcConnection(socket string, nick string, user string, real string) (*Ir
 type Irc struct {
 	conns   []*IrcConnection
 	current string // current socket
+}
+
+func NewIrc() *Irc {
+	var i Irc
+	// prepare for program termination
+	i.handleTermination()
+	i.current = ""
+	return &i
 }
 
 func (ic *IrcConnection) sendMessage(msg string) {
@@ -57,9 +64,10 @@ func (ic *IrcConnection) setUserReal(user string, real string) {
 	ic.real = real
 }
 
-// this should probably be in a thread since messages can happen any time
+// this should be run in a goroutine since messages can happen any time
 func (ic *IrcConnection) listen() {
-	for line, err := ic.conn.R.ReadString('\n'); err == nil; {
+	line := ""
+	for err := error(nil); err == nil; line, err = ic.conn.R.ReadString('\n') {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "PING") {
 			fmt.Println("ping!")
@@ -76,14 +84,14 @@ func (ic *IrcConnection) pong(ping string) {
 
 func (i *Irc) addConnection(socket string, nick string, user string, real string) (*IrcConnection, bool) {
 	// add the connection to the conns map
-	if conn, err := NewIrcConnection(socket, nick, user, real); err != nil {
+	if ic, err := NewIrcConnection(socket, nick, user, real); err != nil {
 		fmt.Println("Failed to add connection to %q! Error is: %q", socket, err)
-		return conn, false
+		return ic, false
 	} else {
-		i.conns = append(i.conns, conn)
+		i.conns = append(i.conns, ic)
 		// start the listen thread
-		go conn.listen()
-		return conn, true
+		go ic.listen()
+		return ic, true
 	}
 }
 
@@ -119,13 +127,11 @@ func (i *Irc) handleTermination() {
 
 func main() {
 	var (
-		i      Irc
+		i      = NewIrc()
 		reader = bufio.NewReader(os.Stdin)
 		ready  = false
 		ic     *IrcConnection
 	)
-	// prepare for program termination
-	i.handleTermination()
 	for !ready {
 		ic, ready = i.addConnection(
 			readWithPrompt("Server name: ", reader),
@@ -135,6 +141,6 @@ func main() {
 	}
 	// Send user input directly to IRC server
 	for {
-		ic.sendMessage(readWithPrompt("Type 'JOIN #<channel>' to join a channel:", reader))
+		ic.sendMessage(readWithPrompt("", reader))
 	}
 }
