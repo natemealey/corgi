@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/natemealey/corgi/utils"
 	tp "net/textproto"
 	"os"
 	"os/signal"
@@ -70,16 +71,11 @@ func (ic *IrcConnection) listen() {
 	for err := error(nil); err == nil; line, err = ic.conn.R.ReadString('\n') {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "PING") {
-			fmt.Println("ping!")
-			ic.pong(line)
+			ic.sendMessage(strings.Replace(line, "PING", "PONG", 1))
 		} else {
 			fmt.Println(line)
 		}
 	}
-}
-
-func (ic *IrcConnection) pong(ping string) {
-	ic.sendMessage(strings.Replace(ping, "PING", "PONG", 1))
 }
 
 func (i *Irc) addConnection(socket string, nick string, user string, real string) (*IrcConnection, bool) {
@@ -99,18 +95,6 @@ func (ic *IrcConnection) quit(message string) {
 	ic.sendMessage("QUIT :" + message)
 }
 
-// With the given prompt, get input, returning only when it's more than
-// white space
-func readWithPrompt(prompt string, r *bufio.Reader) string {
-	val := ""
-	for len(val) == 0 {
-		fmt.Print(prompt)
-		val, _ = r.ReadString('\n')
-		val = strings.TrimSpace(val)
-	}
-	return val
-}
-
 func (i *Irc) handleTermination() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -125,6 +109,7 @@ func (i *Irc) handleTermination() {
 	}()
 }
 
+// if run as the only program, supply a simple command line interface
 func main() {
 	var (
 		i      = NewIrc()
@@ -134,13 +119,13 @@ func main() {
 	)
 	for !ready {
 		ic, ready = i.addConnection(
-			readWithPrompt("Server name: ", reader),
-			readWithPrompt("Nickname: ", reader),
-			readWithPrompt("Username: ", reader),
-			readWithPrompt("Real Name: ", reader))
+			utils.ReadWithPrompt("Server name: ", reader),
+			utils.ReadWithPrompt("Nickname: ", reader),
+			utils.ReadWithPrompt("Username: ", reader),
+			utils.ReadWithPrompt("Real Name: ", reader))
 	}
 	// Send user input directly to IRC server
 	for {
-		ic.sendMessage(readWithPrompt("", reader))
+		ic.sendMessage(utils.ReadWithPrompt("", reader))
 	}
 }
