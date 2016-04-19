@@ -21,15 +21,21 @@ type IrcServer struct {
 	nick           string
 	user           string
 	real           string
-	channels       []*Channel
+	channels       map[string]*Channel
 	currentChannel *Channel
 }
 
 func NewIrcServer(socket string, nick string, user string, real string) (*IrcServer, error) {
+	// TODO default port of 6667
 	if newconn, err := tp.Dial("tcp", socket); err != nil {
 		return nil, err
 	} else {
-		ic := IrcServer{conn: newconn, socket: socket, initTime: time.Now(), updateTime: time.Now()}
+		ic := IrcServer{
+			conn:       newconn,
+			socket:     socket,
+			initTime:   time.Now(),
+			updateTime: time.Now(),
+			channels:   make(map[string]*Channel)}
 		ic.setNick(nick)
 		ic.setUserReal(user, real)
 		return &ic, err
@@ -38,14 +44,25 @@ func NewIrcServer(socket string, nick string, user string, real string) (*IrcSer
 
 // TODO does this need other data?
 type Channel struct {
-	name string
-	logs []string
+	name       string
+	nicks      map[string]bool //basically acts as a set
+	logs       []string
+	initTime   time.Time
+	updateTime time.Time
+}
+
+func NewChannel(channelName string) *Channel {
+	return &Channel{
+		name:       channelName,
+		initTime:   time.Now(),
+		updateTime: time.Now(),
+		nicks:      make(map[string]bool)}
 }
 
 // container of all our IRC server metadata
 // TODO does this even make sense as a type?
 type ServerManager struct {
-	conns   []*IrcServer
+	servers []*IrcServer
 	current *IrcServer // current socket
 }
 
@@ -74,13 +91,35 @@ func (ic *IrcServer) setUserReal(user string, real string) {
 	ic.real = real
 }
 
+// when a user parts or quits a channel, select the next most recently added
+// assumes that the current channel was already removed
+func (ic *IrcServer) selectNextChannel() {
+	// only try to find another channel if there will be one available after the
+	// current channel is removed
+	var nextChannel *Channel
+	for name, channel := range ic.channels {
+		if name != ic.currentChannel.name && (nextChannel == nil || channel.updateTime.After(nextChannel.updateTime)) {
+			nextChannel = channel
+		}
+	}
+	ic.currentChannel = nextChannel
+	ic.currentChannel.updateTime = time.Now()
+}
+
+// returns true if the destName is of the current channel or nick
+// TODO is this sensible?
+func (ic *IrcServer) isCurrent(destName string) bool {
+	return (ic.currentChannel != nil && ic.currentChannel.name == destName) || ic.nick == destName
+}
+
+// TODO this is a disgustingly long function
 func (ic *IrcServer) handleLine(line string) {
 	// first, append the line to the logs
-	// TODO should logs be formatted differently?
 	var (
 		channelName string
 		message     string
 	)
+	// TODO handle nicks
 	// TODO handle taken nick, MOTD end
 	strs := strings.SplitN(line, " ", 4)
 	sender := strings.Replace(strings.Split(strs[0], "!")[0], ":", "", 1)
@@ -91,33 +130,41 @@ func (ic *IrcServer) handleLine(line string) {
 		message = strings.Replace(strs[3], ":", "", 1)
 	}
 	if len(strs) > 1 {
-		// JOIN
 		if strs[1] == "JOIN" {
 			if ic.nick == sender {
-				newChannel := Channel{name: channelName}
-				ic.channels = append(ic.channels, &newChannel)
-				ic.currentChannel = &newChannel
+				newChannel := NewChannel(channelName)
+				ic.channels[channelName] = newChannel
+				ic.currentChannel = newChannel
+				ic.currentChannel.updateTime = time.Now()
 			}
-			fmt.Println(sender, "has joined", channelName)
-		}
-		// PART
-		if strs[1] == "PART" {
-
-		}
-		// PRIVMSG
-		if strs[1] == "PRIVMSG" {
+			if ic.currentChannel.name == channelName {
+				fmt.Println(sender, "has joined", channelName)
+			}
+			ic.channels[channelName].nicks[sender] = true
+		} else if strs[1] == "PART" {
+			if ic.currentChannel.name == channelName {
+				fmt.Println(sender, "has parted", channelName)
+			}
+			ic.channels[channelName].nicks[sender] = false
+			if ic.nick == sender {
+				// remove the current channel from the channels map
+				delete(ic.channels, channelName)
+				// if it's the current channel, move to the next one
+				if ic.currentChannel.name == channelName {
+					ic.selectNextChannel()
+				}
+			}
+		} else if strs[1] == "PRIVMSG" {
 			// TODO clean this up
-			if (ic.currentChannel != nil && ic.currentChannel.name == channelName) || ic.nick == channelName {
+			if ic.isCurrent(channelName) {
 				fmt.Println(channelName, "<"+sender+">", message)
 			}
-		}
-		// QUIT
-		if strs[1] == "QUIT" {
-		}
-		// KICK
-		if strs[1] == "KICK" {
+		} else if strs[1] == "QUIT" {
+		} else if strs[1] == "KICK" {
+		} else if strs[1] == "353" { // 353 means a list of nicks
 		}
 	}
+	// TODO should logs have a different format?
 	if ic.currentChannel != nil && ic.currentChannel.name == channelName {
 		ic.currentChannel.logs = append(ic.currentChannel.logs, line)
 	}
@@ -148,7 +195,7 @@ func (sm *ServerManager) addConnection(socket string, nick string, user string, 
 		return ic, false
 	} else {
 		fmt.Println("Successfully connected to ", socket)
-		sm.conns = append(sm.conns, ic)
+		sm.servers = append(sm.servers, ic)
 		sm.current = ic
 		// start the listen thread
 		go ic.listen()
@@ -205,6 +252,8 @@ func (sm *ServerManager) processCommand(cmd string, args string) {
 		sm.outputChannels(args)
 	case "usr":
 		sm.setUser(args)
+	case "help":
+		sm.outputHelp(args)
 	default:
 		// TODO be nicer to the user
 		fmt.Println(cmd + " is an unrecognized command!")
@@ -228,7 +277,7 @@ func (sm *ServerManager) message(args string) {
 func (sm *ServerManager) away(args string)          {}
 func (sm *ServerManager) outputCurrent(args string) {}
 func (sm *ServerManager) quitAll(args string) {
-	for _, ic := range sm.conns {
+	for _, ic := range sm.servers {
 		ic.quit("Quit command received")
 	}
 	os.Exit(0)
@@ -238,6 +287,7 @@ func (sm *ServerManager) switchChannel(args string) {
 	for _, channel := range sm.current.channels {
 		if channel.name == newName {
 			sm.current.currentChannel = channel
+			channel.updateTime = time.Now()
 			return
 		}
 	}
@@ -249,14 +299,14 @@ func (sm *ServerManager) joinChannel(args string) {
 	// extract channel name
 	channelName := strings.Fields(args)[0]
 	sm.current.sendMessage("JOIN " + channelName)
-	// if connection succeeds, set current channel
-	// TODO CONNECTION SUCCESS CHECK
+	// channel is added and set as current when server sends JOIN back
 }
 
 // TODO is this even necessary?
 func (sm *ServerManager) setUser(args string) {}
 func (sm *ServerManager) outputChannels(args string) {
 	fmt.Println("All connected channels on: ", sm.current.socket)
+	// TODO this output isn't ordered - should we order by something?
 	for _, channel := range sm.current.channels {
 		if sm.current.currentChannel == channel {
 			fmt.Println("  " + channel.name + " [active]")
@@ -265,6 +315,7 @@ func (sm *ServerManager) outputChannels(args string) {
 		}
 	}
 }
+func (sm *ServerManager) outputHelp(args string) {}
 
 func main() {
 	var (
@@ -273,11 +324,10 @@ func main() {
 		cmd    string
 		reader = bufio.NewReader(os.Stdin)
 	)
-	fmt.Println("Initialized IRC client")
+	fmt.Println("Initialized Corgi IRC client")
 	// read in a user ident?
 	for {
 		// read in line from user
-		// TODO username+channel prompt?
 		input = utils.ReadWithPrompt(">", reader)
 		// split into command + args
 		if strings.HasPrefix(input, "/") {
