@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"github.com/buger/goterm"
+	gp "github.com/natemealey/GoPanes"
 	"github.com/natemealey/corgi/utils"
 	tp "net/textproto"
 	"os"
@@ -13,7 +13,46 @@ import (
 	"time"
 )
 
-type IrcInterface struct {
+type IrcUi struct {
+	panes     *gp.GoPaneUi
+	inputBox  *gp.GoPane
+	outputBox *gp.GoPane
+}
+
+func NewIrcUi() *IrcUi {
+	panes := gp.NewGoPaneUi()
+	panes.Root.Info()
+	if panes.Root.Horiz(-4) {
+		newUi := IrcUi{
+			panes:     panes,
+			inputBox:  panes.Root.Second,
+			outputBox: panes.Root.First}
+		fmt.Printf("nil? ", panes.Root == nil)
+		panes.Root.First.Info()
+
+		newUi.render()
+		return &newUi
+	}
+	fmt.Println("Failed to split")
+	return nil
+}
+
+func (ui *IrcUi) render() {
+	fmt.Printf("\033[H\033[2J")
+	ui.panes.Root.Refresh()
+}
+
+func (ui *IrcUi) getMessageWithPrompt(prompt string) string {
+	ui.inputBox.Clear()
+	ui.panes.Root.Refresh()
+	ui.inputBox.Focus()
+	str := utils.ReadWithPrompt(prompt, bufio.NewReader(os.Stdin))
+	return str
+}
+
+func (ui *IrcUi) output(line string) {
+	ui.outputBox.AddLine(line)
+	ui.outputBox.Refresh()
 }
 
 // all times are in local time
@@ -68,12 +107,14 @@ func NewChannel(channelName string) *Channel {
 type ServerManager struct {
 	servers []*IrcServer
 	current *IrcServer // current socket
+	ui      *IrcUi
 }
 
 func NewServerManager() *ServerManager {
 	var sm ServerManager
 	// prepare for program termination
 	sm.handleTermination()
+	sm.ui = NewIrcUi()
 	return &sm
 }
 
@@ -113,25 +154,22 @@ func (ic *IrcServer) selectNextChannel() {
 	}
 }
 
-func (ic *IrcServer) printMessage(sender string, recipient string, msg string) {
-	if ic.nick == recipient {
-		fmt.Printf("\033[0;0H")
-		fmt.Println(
-			utils.Color.Yellow(recipient),
-			utils.Color.Magenta("<"+sender+">"),
-			utils.Color.Blue("[private]"),
+func (ic *IrcServer) printMessage(sender string, recipient string, msg string, ui *IrcUi) {
+	// if it's a private message, output accordingly
+	if !strings.HasPrefix(recipient, "#") {
+		ui.output(utils.Color.Yellow(recipient) + " " +
+			utils.Color.Magenta("<"+sender+">") + " " +
+			utils.Color.Blue("[private]") + " " +
 			msg)
 	} else if ic.currentChannel != nil && ic.currentChannel.name == recipient {
-		fmt.Printf("\033[0;0H")
-		fmt.Println(
-			utils.Color.Yellow(recipient),
-			utils.Color.Magenta("<"+sender+">"),
+		ui.output(utils.Color.Yellow(recipient) + " " +
+			utils.Color.Magenta("<"+sender+">") + " " +
 			msg)
 	}
 }
 
 // TODO this is a disgustingly long function
-func (ic *IrcServer) handleLine(line string) {
+func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 	// first, append the line to the logs
 	var (
 		channelName string
@@ -156,12 +194,12 @@ func (ic *IrcServer) handleLine(line string) {
 				ic.currentChannel.updateTime = time.Now()
 			}
 			if ic.currentChannel.name == channelName {
-				fmt.Println(utils.Color.DarkGray(sender + " has joined " + channelName))
+				ui.output(utils.Color.DarkGray(sender + " has joined " + channelName))
 			}
 			ic.channels[channelName].nicks[sender] = true
 		} else if strs[1] == "PART" {
 			if ic.currentChannel.name == channelName {
-				fmt.Println(utils.Color.DarkGray(sender + " has parted " + channelName))
+				ui.output(utils.Color.DarkGray(sender + " has parted " + channelName))
 			}
 			ic.channels[channelName].nicks[sender] = false
 			if ic.nick == sender {
@@ -173,7 +211,7 @@ func (ic *IrcServer) handleLine(line string) {
 				}
 			}
 		} else if strs[1] == "PRIVMSG" {
-			ic.printMessage(sender, channelName, message)
+			ic.printMessage(sender, channelName, message, ui)
 		} else if strs[1] == "QUIT" {
 		} else if strs[1] == "KICK" {
 		} else if strs[1] == "353" { // 353 means a list of nicks
@@ -186,14 +224,15 @@ func (ic *IrcServer) handleLine(line string) {
 }
 
 // this should be run in a goroutine since messages can happen any time
-func (ic *IrcServer) listen() {
+// TODO is passing the UI pointer sensible?
+func (ic *IrcServer) listen(ui *IrcUi) {
 	line := ""
 	for err := error(nil); err == nil; line, err = ic.conn.R.ReadString('\n') {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "PING") {
 			ic.sendMessage(strings.Replace(line, "PING", "PONG", 1))
 		} else {
-			ic.handleLine(line)
+			ic.handleLine(line, ui)
 		}
 	}
 }
@@ -206,14 +245,14 @@ func (ic *IrcServer) quit(message string) {
 func (sm *ServerManager) addConnection(socket string, nick string, user string, real string) (*IrcServer, bool) {
 	// add the connection to the conns map
 	if ic, err := NewIrcServer(socket, nick, user, real); err != nil {
-		fmt.Println("Failed to add connection to", socket, "! Error is: ", err)
+		sm.ui.output("Failed to add connection to " + socket + "! Error is: " + err.Error())
 		return ic, false
 	} else {
-		fmt.Println("Successfully connected to", socket)
+		sm.ui.output("Successfully connected to " + socket)
 		sm.servers = append(sm.servers, ic)
 		sm.current = ic
 		// start the listen thread
-		go ic.listen()
+		go ic.listen(sm.ui)
 		return ic, true
 	}
 }
@@ -224,7 +263,7 @@ func (sm *ServerManager) handleTermination() {
 	// close every connection
 	go func() {
 		sig := <-sigs
-		fmt.Println("Received " + sig.String() + ", quitting all active chats...")
+		sm.ui.output("Received " + sig.String() + ", quitting all active chats...")
 		sm.quitAll("")
 	}()
 }
@@ -238,6 +277,7 @@ func InitWithServer() *ServerManager {
 		ready  = false
 	)
 	for !ready {
+		sm.ui.inputBox.Focus()
 		_, ready = sm.addConnection(
 			utils.ReadWithPrompt("Server name: ", reader),
 			utils.ReadWithPrompt("Nickname: ", reader),
@@ -271,28 +311,28 @@ func (sm *ServerManager) processCommand(cmd string, args string) {
 		sm.outputHelp(args)
 	default:
 		// TODO be nicer to the user
-		fmt.Println(cmd + " is an unrecognized command!")
+		sm.ui.output(cmd + " is an unrecognized command!")
 	}
 }
 
 func (sm *ServerManager) messageCurrent(args string) {
 	if sm.current.currentChannel == nil {
-		fmt.Println("No current channel selected!")
+		sm.ui.output("No current channel selected!")
 		return
 	}
 	sm.current.sendMessage("PRIVMSG " + sm.current.currentChannel.name + " :" + args)
-	sm.current.printMessage(sm.current.nick, sm.current.currentChannel.name, args)
+	sm.current.printMessage(sm.current.nick, sm.current.currentChannel.name, args, sm.ui)
 }
 func (sm *ServerManager) message(args string) {
 	strs := strings.SplitN(args, " ", 2)
 	if len(strs) < 2 {
-		fmt.Println("Must specify a channel and message text!")
+		sm.ui.output("Must specify a channel and message text!")
 		return
 	}
 	target := strs[0]
 	message := strs[1]
 	sm.current.sendMessage("PRIVMSG " + target + " :" + message)
-	sm.current.printMessage(sm.current.nick, target, message)
+	sm.current.printMessage(sm.current.nick, target, message, sm.ui)
 }
 func (sm *ServerManager) away(args string) {}
 func (sm *ServerManager) quitAll(args string) {
@@ -307,10 +347,11 @@ func (sm *ServerManager) switchChannel(args string) {
 		if channel.name == newName {
 			sm.current.currentChannel = channel
 			channel.updateTime = time.Now()
+			sm.ui.output(utils.Color.DarkGray("Switched to " + newName))
 			return
 		}
 	}
-	fmt.Println("No such channel ", newName, "!")
+	sm.ui.output("No such channel " + newName + "!")
 }
 
 // join just one channel
@@ -325,7 +366,7 @@ func (sm *ServerManager) partChannel(args string) {
 	channelName := strings.TrimSpace(strings.Fields(args)[0])
 	if channelName == "" {
 		if sm.current.currentChannel == nil {
-			fmt.Println("Cannot part: no active channel and no channel specified")
+			sm.ui.output("Cannot part: no active channel and no channel specified")
 			return
 		}
 		channelName = sm.current.currentChannel.name
@@ -337,13 +378,13 @@ func (sm *ServerManager) partChannel(args string) {
 // TODO is this even necessary?
 func (sm *ServerManager) setUser(args string) {}
 func (sm *ServerManager) outputChannels(args string) {
-	fmt.Println(utils.Color.Blue("All connected channels on:"), utils.Color.Magenta(sm.current.socket))
+	sm.ui.output(utils.Color.Blue("All connected channels on: ") + utils.Color.Magenta(sm.current.socket))
 	// TODO this output isn't ordered - should we order by something?
 	for _, channel := range sm.current.channels {
 		if sm.current.currentChannel == channel {
-			fmt.Println("  " + utils.Color.Yellow(channel.name) + utils.Color.Green(" [active]"))
+			sm.ui.output("  " + utils.Color.Yellow(channel.name) + utils.Color.Green(" [active]"))
 		} else {
-			fmt.Println("  " + utils.Color.Yellow(channel.name))
+			sm.ui.output("  " + utils.Color.Yellow(channel.name))
 		}
 	}
 }
@@ -351,16 +392,16 @@ func (sm *ServerManager) outputHelp(args string) {}
 
 func main() {
 	var (
-		sm     = InitWithServer()
-		input  string
-		cmd    string
-		reader = bufio.NewReader(os.Stdin)
+		sm    = InitWithServer()
+		input string
+		cmd   string
 	)
-	fmt.Println("Initialized Corgi IRC client")
+	sm.ui.output("Initialized Corgi IRC client")
 	// read in a user ident?
 	for {
 		// read in line from user
-		input = utils.ReadWithPrompt(">", reader)
+		input = sm.ui.getMessageWithPrompt(
+			utils.Color.Magenta(sm.current.nick) + utils.Color.Blue("> "))
 		// split into command + args
 		if strings.HasPrefix(input, "/") {
 			cmd = strings.Fields(input)[0][1:]
