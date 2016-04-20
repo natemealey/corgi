@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/buger/goterm"
 	"github.com/natemealey/corgi/utils"
 	tp "net/textproto"
 	"os"
@@ -11,6 +12,9 @@ import (
 	"syscall"
 	"time"
 )
+
+type IrcInterface struct {
+}
 
 // all times are in local time
 type IrcServer struct {
@@ -74,7 +78,8 @@ func NewServerManager() *ServerManager {
 }
 
 func (ic *IrcServer) sendMessage(msg string) {
-	fmt.Println("Sending message:", msg)
+	// TODO debug output
+	//fmt.Println("Sending message:", msg)
 	fmt.Fprint(ic.conn.Writer.W, msg+"\r\n")
 	ic.conn.Writer.W.Flush()
 	ic.updateTime = time.Now()
@@ -103,13 +108,26 @@ func (ic *IrcServer) selectNextChannel() {
 		}
 	}
 	ic.currentChannel = nextChannel
-	ic.currentChannel.updateTime = time.Now()
+	if ic.currentChannel != nil {
+		ic.currentChannel.updateTime = time.Now()
+	}
 }
 
-// returns true if the destName is of the current channel or nick
-// TODO is this sensible?
-func (ic *IrcServer) isCurrent(destName string) bool {
-	return (ic.currentChannel != nil && ic.currentChannel.name == destName) || ic.nick == destName
+func (ic *IrcServer) printMessage(sender string, recipient string, msg string) {
+	if ic.nick == recipient {
+		fmt.Printf("\033[0;0H")
+		fmt.Println(
+			utils.Color.Yellow(recipient),
+			utils.Color.Magenta("<"+sender+">"),
+			utils.Color.Blue("[private]"),
+			msg)
+	} else if ic.currentChannel != nil && ic.currentChannel.name == recipient {
+		fmt.Printf("\033[0;0H")
+		fmt.Println(
+			utils.Color.Yellow(recipient),
+			utils.Color.Magenta("<"+sender+">"),
+			msg)
+	}
 }
 
 // TODO this is a disgustingly long function
@@ -138,12 +156,12 @@ func (ic *IrcServer) handleLine(line string) {
 				ic.currentChannel.updateTime = time.Now()
 			}
 			if ic.currentChannel.name == channelName {
-				fmt.Println(sender, "has joined", channelName)
+				fmt.Println(utils.Color.DarkGray(sender + " has joined " + channelName))
 			}
 			ic.channels[channelName].nicks[sender] = true
 		} else if strs[1] == "PART" {
 			if ic.currentChannel.name == channelName {
-				fmt.Println(sender, "has parted", channelName)
+				fmt.Println(utils.Color.DarkGray(sender + " has parted " + channelName))
 			}
 			ic.channels[channelName].nicks[sender] = false
 			if ic.nick == sender {
@@ -155,10 +173,7 @@ func (ic *IrcServer) handleLine(line string) {
 				}
 			}
 		} else if strs[1] == "PRIVMSG" {
-			// TODO clean this up
-			if ic.isCurrent(channelName) {
-				fmt.Println(channelName, "<"+sender+">", message)
-			}
+			ic.printMessage(sender, channelName, message)
 		} else if strs[1] == "QUIT" {
 		} else if strs[1] == "KICK" {
 		} else if strs[1] == "353" { // 353 means a list of nicks
@@ -194,7 +209,7 @@ func (sm *ServerManager) addConnection(socket string, nick string, user string, 
 		fmt.Println("Failed to add connection to", socket, "! Error is: ", err)
 		return ic, false
 	} else {
-		fmt.Println("Successfully connected to ", socket)
+		fmt.Println("Successfully connected to", socket)
 		sm.servers = append(sm.servers, ic)
 		sm.current = ic
 		// start the listen thread
@@ -240,12 +255,12 @@ func (sm *ServerManager) processCommand(cmd string, args string) {
 		sm.message(args)
 	case "away":
 		sm.away(args)
-	case "current":
-		sm.outputCurrent(args)
 	case "quit":
 		sm.quitAll(args)
 	case "join":
 		sm.joinChannel(args)
+	case "part":
+		sm.partChannel(args)
 	case "channel":
 		sm.switchChannel(args)
 	case "channels":
@@ -265,17 +280,21 @@ func (sm *ServerManager) messageCurrent(args string) {
 		fmt.Println("No current channel selected!")
 		return
 	}
-	sm.current.sendMessage("PRIVMSG " + sm.current.currentChannel.name + " " + args)
+	sm.current.sendMessage("PRIVMSG " + sm.current.currentChannel.name + " :" + args)
+	sm.current.printMessage(sm.current.nick, sm.current.currentChannel.name, args)
 }
 func (sm *ServerManager) message(args string) {
-	// get user or channel name
-	target := " "
-	message := strings.Replace(args, target+" ", "", 1)
-	// format message
-	sm.current.sendMessage("PRIVMSG " + target + " " + message)
+	strs := strings.SplitN(args, " ", 2)
+	if len(strs) < 2 {
+		fmt.Println("Must specify a channel and message text!")
+		return
+	}
+	target := strs[0]
+	message := strs[1]
+	sm.current.sendMessage("PRIVMSG " + target + " :" + message)
+	sm.current.printMessage(sm.current.nick, target, message)
 }
-func (sm *ServerManager) away(args string)          {}
-func (sm *ServerManager) outputCurrent(args string) {}
+func (sm *ServerManager) away(args string) {}
 func (sm *ServerManager) quitAll(args string) {
 	for _, ic := range sm.servers {
 		ic.quit("Quit command received")
@@ -301,17 +320,30 @@ func (sm *ServerManager) joinChannel(args string) {
 	sm.current.sendMessage("JOIN " + channelName)
 	// channel is added and set as current when server sends JOIN back
 }
+func (sm *ServerManager) partChannel(args string) {
+	// extract channel name
+	channelName := strings.TrimSpace(strings.Fields(args)[0])
+	if channelName == "" {
+		if sm.current.currentChannel == nil {
+			fmt.Println("Cannot part: no active channel and no channel specified")
+			return
+		}
+		channelName = sm.current.currentChannel.name
+	}
+	sm.current.sendMessage("PART " + channelName)
+	// channel is added and set as current when server sends JOIN back
+}
 
 // TODO is this even necessary?
 func (sm *ServerManager) setUser(args string) {}
 func (sm *ServerManager) outputChannels(args string) {
-	fmt.Println("All connected channels on: ", sm.current.socket)
+	fmt.Println(utils.Color.Blue("All connected channels on:"), utils.Color.Magenta(sm.current.socket))
 	// TODO this output isn't ordered - should we order by something?
 	for _, channel := range sm.current.channels {
 		if sm.current.currentChannel == channel {
-			fmt.Println("  " + channel.name + " [active]")
+			fmt.Println("  " + utils.Color.Yellow(channel.name) + utils.Color.Green(" [active]"))
 		} else {
-			fmt.Println("  " + channel.name)
+			fmt.Println("  " + utils.Color.Yellow(channel.name))
 		}
 	}
 }
