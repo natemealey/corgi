@@ -362,14 +362,16 @@ func (sm *ServerManager) joinChannel(args string) {
 	// channel is added and set as current when server sends JOIN back
 }
 func (sm *ServerManager) partChannel(args string) {
+	channelName := ""
 	// extract channel name
-	channelName := strings.TrimSpace(strings.Fields(args)[0])
-	if channelName == "" {
+	if args == "" {
 		if sm.current.currentChannel == nil {
 			sm.ui.output("Cannot part: no active channel and no channel specified")
 			return
 		}
 		channelName = sm.current.currentChannel.name
+	} else {
+		channelName = strings.TrimSpace(strings.Fields(args)[0])
 	}
 	sm.current.sendMessage("PART " + channelName)
 	// channel is added and set as current when server sends JOIN back
@@ -410,6 +412,6 @@ func main() {
 		}
 		// process command + args
 		// TODO this could almost certainly be cleaner
-		sm.processCommand(cmd, strings.Replace(input, "/"+cmd+" ", "", 1))
+		sm.processCommand(cmd, strings.TrimSpace(strings.Replace(input, "/"+cmd, "", 1)))
 	}
 }
