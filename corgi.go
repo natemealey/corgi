@@ -279,10 +279,10 @@ func InitWithServer() *ServerManager {
 	for !ready {
 		sm.ui.inputBox.Focus()
 		_, ready = sm.addConnection(
-			utils.ReadWithPrompt("Server name: ", reader),
-			utils.ReadWithPrompt("Nickname: ", reader),
-			utils.ReadWithPrompt("Username: ", reader),
-			utils.ReadWithPrompt("Real Name: ", reader))
+			utils.ReadWithPrompt(utils.Color.Blue("Server name: "), reader),
+			utils.ReadWithPrompt(utils.Color.Blue("Nickname: "), reader),
+			utils.ReadWithPrompt(utils.Color.Blue("Username: "), reader),
+			utils.ReadWithPrompt(utils.Color.Blue("Real Name: "), reader))
 	}
 	// Send user input directly to IRC server
 	return sm
@@ -347,6 +347,11 @@ func (sm *ServerManager) switchChannel(args string) {
 		if channel.name == newName {
 			sm.current.currentChannel = channel
 			channel.updateTime = time.Now()
+			var channelLog string
+			for _, line := range channel.logs {
+				channelLog += line + "\n"
+			}
+			sm.ui.output(channelLog)
 			sm.ui.output(utils.Color.DarkGray("Switched to " + newName))
 			return
 		}
@@ -407,11 +412,11 @@ func main() {
 		// split into command + args
 		if strings.HasPrefix(input, "/") {
 			cmd = strings.Fields(input)[0][1:]
+			sm.processCommand(cmd[1:], strings.TrimSpace(strings.Replace(input, cmd, "", 1)))
 		} else {
-			cmd = ""
+			sm.processCommand("", input)
 		}
 		// process command + args
 		// TODO this could almost certainly be cleaner
-		sm.processCommand(cmd, strings.TrimSpace(strings.Replace(input, "/"+cmd, "", 1)))
 	}
 }
