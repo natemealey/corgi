@@ -21,14 +21,11 @@ type IrcUi struct {
 
 func NewIrcUi() *IrcUi {
 	panes := gp.NewGoPaneUi()
-	panes.Root.Info()
 	if panes.Root.Horiz(-4) {
 		newUi := IrcUi{
 			panes:     panes,
 			inputBox:  panes.Root.Second,
 			outputBox: panes.Root.First}
-		fmt.Printf("nil? ", panes.Root == nil)
-		panes.Root.First.Info()
 
 		newUi.render()
 		return &newUi
@@ -38,7 +35,7 @@ func NewIrcUi() *IrcUi {
 }
 
 func (ui *IrcUi) render() {
-	fmt.Printf("\033[H\033[2J")
+	ui.panes.Clear()
 	ui.panes.Root.Refresh()
 }
 
@@ -48,6 +45,11 @@ func (ui *IrcUi) getMessageWithPrompt(prompt string) string {
 	ui.inputBox.Focus()
 	str := utils.ReadWithPrompt(prompt, bufio.NewReader(os.Stdin))
 	return str
+}
+
+func (ui *IrcUi) clearOutput() {
+	ui.outputBox.Clear()
+	ui.outputBox.Refresh()
 }
 
 func (ui *IrcUi) output(line string) {
@@ -169,6 +171,8 @@ func (ic *IrcServer) printMessage(sender string, recipient string, msg string, u
 }
 
 // TODO this is a disgustingly long function
+// TODO remove necessity of ui param and return a string to be printed
+// by whatever to improve decoupling
 func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 	// first, append the line to the logs
 	var (
@@ -192,6 +196,7 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 				ic.channels[channelName] = newChannel
 				ic.currentChannel = newChannel
 				ic.currentChannel.updateTime = time.Now()
+				ui.clearOutput()
 			}
 			if ic.currentChannel.name == channelName {
 				ui.output(utils.Color.DarkGray(sender + " has joined " + channelName))
@@ -218,8 +223,8 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 		}
 	}
 	// TODO should logs have a different format?
-	if ic.currentChannel != nil && ic.currentChannel.name == channelName {
-		ic.currentChannel.logs = append(ic.currentChannel.logs, line)
+	if ic.channels[channelName] != nil {
+		ic.channels[channelName].logs = append(ic.channels[channelName].logs, line)
 	}
 }
 
@@ -347,11 +352,10 @@ func (sm *ServerManager) switchChannel(args string) {
 		if channel.name == newName {
 			sm.current.currentChannel = channel
 			channel.updateTime = time.Now()
-			var channelLog string
+			sm.ui.clearOutput()
 			for _, line := range channel.logs {
-				channelLog += line + "\n"
+				sm.current.handleLine(line, sm.ui)
 			}
-			sm.ui.output(channelLog)
 			sm.ui.output(utils.Color.DarkGray("Switched to " + newName))
 			return
 		}
@@ -404,19 +408,16 @@ func main() {
 		cmd   string
 	)
 	sm.ui.output("Initialized Corgi IRC client")
-	// read in a user ident?
 	for {
 		// read in line from user
 		input = sm.ui.getMessageWithPrompt(
 			utils.Color.Magenta(sm.current.nick) + utils.Color.Blue("> "))
 		// split into command + args
 		if strings.HasPrefix(input, "/") {
-			cmd = strings.Fields(input)[0][1:]
+			cmd = strings.Fields(input)[0]
 			sm.processCommand(cmd[1:], strings.TrimSpace(strings.Replace(input, cmd, "", 1)))
 		} else {
 			sm.processCommand("", input)
 		}
-		// process command + args
-		// TODO this could almost certainly be cleaner
 	}
 }
