@@ -121,8 +121,6 @@ func NewServerManager() *ServerManager {
 }
 
 func (ic *IrcServer) sendMessage(msg string) {
-	// TODO debug output
-	//fmt.Println("Sending message:", msg)
 	fmt.Fprint(ic.conn.Writer.W, msg+"\r\n")
 	ic.conn.Writer.W.Flush()
 	ic.updateTime = time.Now()
@@ -168,6 +166,32 @@ func (ic *IrcServer) printMessage(sender string, recipient string, msg string, u
 			utils.Color.Magenta("<"+sender+">") + " " +
 			msg)
 	}
+	// TODO make sure this works
+	if ic.channels[recipient] != nil {
+		line := ":" + sender + " PRIVMSG " + recipient + " :" + msg
+		ic.channels[recipient].logs = append(ic.channels[recipient].logs, line)
+	}
+}
+
+func (ic *IrcServer) joinChannel(channelName, nick string) {
+	if ic.nick == nick {
+		newChannel := NewChannel(channelName)
+		ic.channels[channelName] = newChannel
+		ic.currentChannel = newChannel
+		ic.currentChannel.updateTime = time.Now()
+	}
+}
+
+func (ic *IrcServer) leaveChannel(channelName, nick string) {
+	ic.channels[channelName].nicks[nick] = false
+	if ic.nick == nick {
+		// remove the current channel from the channels map
+		delete(ic.channels, channelName)
+		// if it's the current channel, move to the next one
+		if ic.currentChannel.name == channelName {
+			ic.selectNextChannel()
+		}
+	}
 }
 
 // TODO this is a disgustingly long function
@@ -186,16 +210,19 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 	if len(strs) > 2 {
 		channelName = strs[2]
 	}
+	// TODO evaluate the quality of this
 	if len(strs) > 3 {
-		message = strings.Replace(strs[3], ":", "", 1)
+		split := strings.SplitN(line, ":", 3)
+		if len(split) < 3 {
+			message = strings.Replace(strs[3], ":", "", 1)
+		} else {
+			message = split[2]
+		}
 	}
 	if len(strs) > 1 {
 		if strs[1] == "JOIN" {
+			ic.joinChannel(channelName, sender)
 			if ic.nick == sender {
-				newChannel := NewChannel(channelName)
-				ic.channels[channelName] = newChannel
-				ic.currentChannel = newChannel
-				ic.currentChannel.updateTime = time.Now()
 				ui.clearOutput()
 			}
 			if ic.currentChannel.name == channelName {
@@ -206,23 +233,40 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 			if ic.currentChannel.name == channelName {
 				ui.output(utils.Color.DarkGray(sender + " has parted " + channelName))
 			}
-			ic.channels[channelName].nicks[sender] = false
-			if ic.nick == sender {
-				// remove the current channel from the channels map
-				delete(ic.channels, channelName)
-				// if it's the current channel, move to the next one
-				if ic.currentChannel.name == channelName {
-					ic.selectNextChannel()
-				}
-			}
+			ic.leaveChannel(channelName, sender)
 		} else if strs[1] == "PRIVMSG" {
 			ic.printMessage(sender, channelName, message, ui)
 		} else if strs[1] == "QUIT" {
+			if ic.currentChannel.name == channelName {
+				ui.output(utils.Color.DarkGray(sender + " has quit " + channelName))
+			}
 		} else if strs[1] == "KICK" {
-		} else if strs[1] == "353" { // 353 means a list of nicks
+		} else if strs[1] == "353" { // list of nicks
+			nicks := strings.Fields(message)
+			// get actual channel name
+			// TODO make sure params will be split this way always
+			params := strings.SplitN(line, " ", 6)
+			if len(params) == 6 {
+				channelName = strings.TrimSpace(params[4])
+			}
+			for _, nick := range nicks {
+				// discard operator prefixes
+				if strings.HasPrefix(nick, "+") || strings.HasPrefix(nick, "@") {
+					nick = nick[1:]
+				}
+				// add the nick to the channel's nick list
+				if ic.channels[channelName] != nil {
+					ic.channels[channelName].nicks[nick] = true
+				}
+			}
+		} else if strs[1] == "366" { // End of nicks
+		} else if strs[1] == "375" { // MOTD start
+		} else if strs[1] == "372" { // MOTD body
+		} else if strs[1] == "376" { // MOTD end
+		} else {
+			ui.output(utils.Color.DarkGray(message))
 		}
 	}
-	// TODO should logs have a different format?
 	if ic.channels[channelName] != nil {
 		ic.channels[channelName].logs = append(ic.channels[channelName].logs, line)
 	}
@@ -310,8 +354,12 @@ func (sm *ServerManager) processCommand(cmd string, args string) {
 		sm.switchChannel(args)
 	case "channels":
 		sm.outputChannels(args)
+	case "nicks":
+		sm.outputNicks(args)
 	case "usr":
 		sm.setUser(args)
+	case "nick":
+		sm.setNick(args)
 	case "help":
 		sm.outputHelp(args)
 	default:
@@ -367,20 +415,34 @@ func (sm *ServerManager) switchChannel(args string) {
 func (sm *ServerManager) joinChannel(args string) {
 	// extract channel name
 	channelName := strings.Fields(args)[0]
+	sm.ui.output(utils.Color.DarkGray("Joining " + channelName + "..."))
 	sm.current.sendMessage("JOIN " + channelName)
 	// channel is added and set as current when server sends JOIN back
 }
-func (sm *ServerManager) partChannel(args string) {
+
+// only works when the first arg is the channel
+// extracts channel from arg list, substituting current channel if none was specified.
+// error condition if no current channel and no channel specified.
+// returns true, "" on error, false, channelName on success
+func (sm *ServerManager) channelFromArgs(args string) (bool, string) {
 	channelName := ""
 	// extract channel name
 	if args == "" {
 		if sm.current.currentChannel == nil {
-			sm.ui.output("Cannot part: no active channel and no channel specified")
-			return
+			return true, ""
 		}
 		channelName = sm.current.currentChannel.name
 	} else {
 		channelName = strings.TrimSpace(strings.Fields(args)[0])
+	}
+	return false, channelName
+}
+
+func (sm *ServerManager) partChannel(args string) {
+	err, channelName := sm.channelFromArgs(args)
+	if err {
+		sm.ui.output("Cannot part: no active channel and no channel specified")
+		return
 	}
 	sm.current.sendMessage("PART " + channelName)
 	// channel is added and set as current when server sends JOIN back
@@ -388,6 +450,17 @@ func (sm *ServerManager) partChannel(args string) {
 
 // TODO is this even necessary?
 func (sm *ServerManager) setUser(args string) {}
+func (sm *ServerManager) setNick(args string) {
+	newNick := strings.TrimSpace(args)
+	if len(newNick) == 0 {
+		sm.ui.output("Must specify a nick!")
+		return
+	} else if strings.Contains(newNick, " ") {
+		sm.ui.output("Nick cannot contain spaces!")
+		return
+	}
+	sm.current.setNick(newNick)
+}
 func (sm *ServerManager) outputChannels(args string) {
 	sm.ui.output(utils.Color.Blue("All connected channels on: ") + utils.Color.Magenta(sm.current.socket))
 	// TODO this output isn't ordered - should we order by something?
@@ -399,6 +472,23 @@ func (sm *ServerManager) outputChannels(args string) {
 		}
 	}
 }
+func (sm *ServerManager) outputNicks(args string) {
+	err, channelName := sm.channelFromArgs(args)
+	if err {
+		sm.ui.output("Can't output nicks: no active channel and no channel specified")
+		return
+	}
+	if sm.current.channels[channelName] == nil {
+		sm.ui.output("Couldn't look up channel '" + channelName + "'!")
+		return
+	}
+	nickList := ""
+	for nick, _ := range sm.current.channels[channelName].nicks {
+		nickList += nick + " "
+	}
+	sm.ui.output(utils.Color.Blue("All nicks on "+channelName+": ") + utils.Color.Magenta(nickList))
+}
+
 func (sm *ServerManager) outputHelp(args string) {}
 
 func main() {
