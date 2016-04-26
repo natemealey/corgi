@@ -57,6 +57,27 @@ func (ui *IrcUi) output(line string) {
 	ui.outputBox.Refresh()
 }
 
+// semantic sytax coloring
+func (ui *IrcUi) info(line string) {
+	ui.output(utils.Color.Blue(line))
+}
+
+func (ui *IrcUi) err(line string) {
+	ui.output(utils.Color.Red(line))
+}
+
+func (ui *IrcUi) warn(line string) {
+	ui.output(utils.Color.Yellow(line))
+}
+
+func (ui *IrcUi) success(line string) {
+	ui.output(utils.Color.Green(line))
+}
+
+func (ui *IrcUi) note(line string) {
+	ui.output(utils.Color.DarkGray(line))
+}
+
 // all times are in local time
 type IrcServer struct {
 	conn           *tp.Conn
@@ -226,19 +247,19 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 				ui.clearOutput()
 			}
 			if ic.currentChannel.name == channelName {
-				ui.output(utils.Color.DarkGray(sender + " has joined " + channelName))
+				ui.note(sender + " has joined " + channelName)
 			}
 			ic.channels[channelName].nicks[sender] = true
 		} else if strs[1] == "PART" {
 			if ic.currentChannel.name == channelName {
-				ui.output(utils.Color.DarkGray(sender + " has parted " + channelName))
+				ui.note(sender + " has parted " + channelName)
 			}
 			ic.leaveChannel(channelName, sender)
 		} else if strs[1] == "PRIVMSG" {
 			ic.printMessage(sender, channelName, message, ui)
 		} else if strs[1] == "QUIT" {
 			if ic.currentChannel.name == channelName {
-				ui.output(utils.Color.DarkGray(sender + " has quit " + channelName))
+				ui.note(sender + " has quit " + channelName)
 			}
 		} else if strs[1] == "KICK" {
 		} else if strs[1] == "353" { // list of nicks
@@ -264,7 +285,7 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 		} else if strs[1] == "372" { // MOTD body
 		} else if strs[1] == "376" { // MOTD end
 		} else {
-			ui.output(utils.Color.DarkGray(message))
+			ui.note(message)
 		}
 	}
 	if ic.channels[channelName] != nil {
@@ -294,10 +315,10 @@ func (ic *IrcServer) quit(message string) {
 func (sm *ServerManager) addConnection(socket string, nick string, user string, real string) (*IrcServer, bool) {
 	// add the connection to the conns map
 	if ic, err := NewIrcServer(socket, nick, user, real); err != nil {
-		sm.ui.output("Failed to add connection to " + socket + "! Error is: " + err.Error())
+		sm.ui.err("Failed to add connection to " + socket + "! Error is: " + err.Error())
 		return ic, false
 	} else {
-		sm.ui.output("Successfully connected to " + socket)
+		sm.ui.success("Successfully connected to " + socket)
 		sm.servers = append(sm.servers, ic)
 		sm.current = ic
 		// start the listen thread
@@ -312,7 +333,7 @@ func (sm *ServerManager) handleTermination() {
 	// close every connection
 	go func() {
 		sig := <-sigs
-		sm.ui.output("Received " + sig.String() + ", quitting all active chats...")
+		sm.ui.info("Received " + sig.String() + ", quitting all active chats...")
 		sm.quitAll("")
 	}()
 }
@@ -363,7 +384,6 @@ func (sm *ServerManager) processCommand(cmd string, args string) {
 	case "help":
 		sm.outputHelp(args)
 	default:
-		// TODO be nicer to the user
 		sm.ui.output(cmd + " is an unrecognized command!")
 	}
 }
@@ -404,18 +424,18 @@ func (sm *ServerManager) switchChannel(args string) {
 			for _, line := range channel.logs {
 				sm.current.handleLine(line, sm.ui)
 			}
-			sm.ui.output(utils.Color.DarkGray("Switched to " + newName))
+			sm.ui.success("Switched to " + newName)
 			return
 		}
 	}
-	sm.ui.output("No such channel " + newName + "!")
+	sm.ui.err("No such channel " + newName + "!")
 }
 
 // join just one channel
 func (sm *ServerManager) joinChannel(args string) {
 	// extract channel name
 	channelName := strings.Fields(args)[0]
-	sm.ui.output(utils.Color.DarkGray("Joining " + channelName + "..."))
+	sm.ui.note("Joining " + channelName + "...")
 	sm.current.sendMessage("JOIN " + channelName)
 	// channel is added and set as current when server sends JOIN back
 }
@@ -441,7 +461,7 @@ func (sm *ServerManager) channelFromArgs(args string) (bool, string) {
 func (sm *ServerManager) partChannel(args string) {
 	err, channelName := sm.channelFromArgs(args)
 	if err {
-		sm.ui.output("Cannot part: no active channel and no channel specified")
+		sm.ui.err("Cannot part: no active channel and no channel specified")
 		return
 	}
 	sm.current.sendMessage("PART " + channelName)
@@ -453,10 +473,10 @@ func (sm *ServerManager) setUser(args string) {}
 func (sm *ServerManager) setNick(args string) {
 	newNick := strings.TrimSpace(args)
 	if len(newNick) == 0 {
-		sm.ui.output("Must specify a nick!")
+		sm.ui.err("Must specify a nick!")
 		return
 	} else if strings.Contains(newNick, " ") {
-		sm.ui.output("Nick cannot contain spaces!")
+		sm.ui.err("Nick cannot contain spaces!")
 		return
 	}
 	sm.current.setNick(newNick)
@@ -475,11 +495,11 @@ func (sm *ServerManager) outputChannels(args string) {
 func (sm *ServerManager) outputNicks(args string) {
 	err, channelName := sm.channelFromArgs(args)
 	if err {
-		sm.ui.output("Can't output nicks: no active channel and no channel specified")
+		sm.ui.err("Can't output nicks: no active channel and no channel specified")
 		return
 	}
 	if sm.current.channels[channelName] == nil {
-		sm.ui.output("Couldn't look up channel '" + channelName + "'!")
+		sm.ui.err("Couldn't look up channel '" + channelName + "'!")
 		return
 	}
 	nickList := ""
