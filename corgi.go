@@ -176,6 +176,9 @@ func (ic *IrcServer) selectNextChannel() {
 }
 
 func (ic *IrcServer) printMessage(sender string, recipient string, msg string, ui *IrcUi) {
+	if sender == "" {
+		sender = ic.nick
+	}
 	// if it's a private message, output accordingly
 	if !strings.HasPrefix(recipient, "#") {
 		ui.output(utils.Color.Yellow(recipient) + " " +
@@ -186,11 +189,6 @@ func (ic *IrcServer) printMessage(sender string, recipient string, msg string, u
 		ui.output(utils.Color.Yellow(recipient) + " " +
 			utils.Color.Magenta("<"+sender+">") + " " +
 			msg)
-	}
-	// TODO make sure this works
-	if ic.channels[recipient] != nil {
-		line := ":" + sender + " PRIVMSG " + recipient + " :" + msg
-		ic.channels[recipient].logs = append(ic.channels[recipient].logs, line)
 	}
 }
 
@@ -215,33 +213,73 @@ func (ic *IrcServer) leaveChannel(channelName, nick string) {
 	}
 }
 
+// translated from the Twisted implementation
+func parseIrcMessage(message string) (prefix, command string, args []string) {
+	prefix = ""
+	var trailing string
+	if len(message) == 0 {
+		// TODO better error handling
+		return prefix, command, args
+	}
+	if message[0] == ':' {
+		strs := strings.SplitN(message[1:], " ", 2)
+		if len(strs) > 0 {
+			prefix = strs[0]
+		}
+		if len(strs) > 1 {
+			message = strs[1]
+		}
+	}
+	if strings.Contains(message, " :") {
+		strs := strings.SplitN(message, " :", 2)
+		if len(strs) > 0 {
+			message = strs[0]
+		}
+		if len(strs) > 1 {
+			trailing = strs[1]
+		}
+		args = strings.Split(message, " ")
+		args = append(args, trailing)
+	} else {
+		args = strings.Split(message, " ")
+	}
+	command, args = args[0], args[1:]
+	return prefix, command, args
+}
+
+func prefixToSender(prefix string) string {
+	return strings.Replace(strings.Split(prefix, "!")[0], ":", "", 1)
+}
+
+func (ic *IrcServer) logLineToChannel(line, channelName string) {
+	if ic.channels[channelName] != nil {
+		ic.channels[channelName].logs = append(ic.channels[channelName].logs, line)
+	}
+}
+
 // TODO this is a disgustingly long function
 // TODO remove necessity of ui param and return a string to be printed
 // by whatever to improve decoupling
-func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
+// returns the name of the channel that send the line
+func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 	// first, append the line to the logs
 	var (
 		channelName string
 		message     string
 	)
-	// TODO handle nicks
 	// TODO handle taken nick, MOTD end
-	strs := strings.SplitN(line, " ", 4)
-	sender := strings.Replace(strings.Split(strs[0], "!")[0], ":", "", 1)
-	if len(strs) > 2 {
-		channelName = strs[2]
+	prefix, command, args := parseIrcMessage(line)
+	if len(args) > 0 {
+		channelName = args[0]
 	}
-	// TODO evaluate the quality of this
-	if len(strs) > 3 {
-		split := strings.SplitN(line, ":", 3)
-		if len(split) < 3 {
-			message = strings.Replace(strs[3], ":", "", 1)
-		} else {
-			message = split[2]
+	if prefix != "" || command != "" {
+		// TODO this is potentially not great
+		if len(args) > 1 {
+			message = strings.Join(args[1:], " ")
 		}
-	}
-	if len(strs) > 1 {
-		if strs[1] == "JOIN" {
+		sender := prefixToSender(prefix)
+		switch command {
+		case "JOIN":
 			ic.joinChannel(channelName, sender)
 			if ic.nick == sender {
 				ui.clearOutput()
@@ -250,19 +288,20 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 				ui.note(sender + " has joined " + channelName)
 			}
 			ic.channels[channelName].nicks[sender] = true
-		} else if strs[1] == "PART" {
+		case "PART":
 			if ic.currentChannel.name == channelName {
 				ui.note(sender + " has parted " + channelName)
 			}
 			ic.leaveChannel(channelName, sender)
-		} else if strs[1] == "PRIVMSG" {
+		case "PRIVMSG":
 			ic.printMessage(sender, channelName, message, ui)
-		} else if strs[1] == "QUIT" {
-			if ic.currentChannel.name == channelName {
-				ui.note(sender + " has quit " + channelName)
+		case "QUIT":
+			if ic.currentChannel != nil && ic.currentChannel.nicks[sender] {
+				ui.note(sender + " has quit.")
+				ic.currentChannel.nicks[sender] = false
 			}
-		} else if strs[1] == "KICK" {
-		} else if strs[1] == "353" { // list of nicks
+		case "KICK":
+		case "353": // list of nicks
 			nicks := strings.Fields(message)
 			// get actual channel name
 			// TODO make sure params will be split this way always
@@ -280,29 +319,29 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) {
 					ic.channels[channelName].nicks[nick] = true
 				}
 			}
-		} else if strs[1] == "366" { // End of nicks
-		} else if strs[1] == "375" { // MOTD start
-		} else if strs[1] == "372" { // MOTD body
-		} else if strs[1] == "376" { // MOTD end
-		} else {
+		case "366": // End of nicks
+		case "375": // MOTD start
+		case "372": // MOTD body
+		case "376": // MOTD end
+		default:
 			ui.note(message)
 		}
 	}
-	if ic.channels[channelName] != nil {
-		ic.channels[channelName].logs = append(ic.channels[channelName].logs, line)
-	}
+	return channelName
 }
 
 // this should be run in a goroutine since messages can happen any time
 // TODO is passing the UI pointer sensible?
 func (ic *IrcServer) listen(ui *IrcUi) {
-	line := ""
+	var channelName string
+	var line string
 	for err := error(nil); err == nil; line, err = ic.conn.R.ReadString('\n') {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "PING") {
 			ic.sendMessage(strings.Replace(line, "PING", "PONG", 1))
 		} else {
-			ic.handleLine(line, ui)
+			channelName = ic.handleLine(line, ui)
+			ic.logLineToChannel(line, channelName)
 		}
 	}
 }
@@ -375,37 +414,42 @@ func (sm *ServerManager) processCommand(cmd string, args string) {
 		sm.switchChannel(args)
 	case "channels":
 		sm.outputChannels(args)
+	case "server":
+		sm.newServer(args)
+	case "servers":
+		sm.outputServers(args)
+	case "nick":
+		sm.setNick(args)
 	case "nicks":
 		sm.outputNicks(args)
 	case "usr":
 		sm.setUser(args)
-	case "nick":
-		sm.setNick(args)
 	case "help":
 		sm.outputHelp(args)
 	default:
-		sm.ui.output(cmd + " is an unrecognized command!")
+		sm.ui.err(cmd + " is an unrecognized command!")
 	}
 }
 
 func (sm *ServerManager) messageCurrent(args string) {
 	if sm.current.currentChannel == nil {
-		sm.ui.output("No current channel selected!")
+		sm.ui.err("No current channel selected!")
 		return
 	}
-	sm.current.sendMessage("PRIVMSG " + sm.current.currentChannel.name + " :" + args)
-	sm.current.printMessage(sm.current.nick, sm.current.currentChannel.name, args, sm.ui)
+	sm.message(sm.current.currentChannel.name + " " + args)
 }
 func (sm *ServerManager) message(args string) {
 	strs := strings.SplitN(args, " ", 2)
 	if len(strs) < 2 {
-		sm.ui.output("Must specify a channel and message text!")
+		sm.ui.err("Must specify a channel and message text!")
 		return
 	}
 	target := strs[0]
 	message := strs[1]
-	sm.current.sendMessage("PRIVMSG " + target + " :" + message)
+	line := "PRIVMSG " + target + " :" + message
+	sm.current.sendMessage(line)
 	sm.current.printMessage(sm.current.nick, target, message, sm.ui)
+	sm.current.logLineToChannel(line, target)
 }
 func (sm *ServerManager) away(args string) {}
 func (sm *ServerManager) quitAll(args string) {
@@ -439,6 +483,9 @@ func (sm *ServerManager) joinChannel(args string) {
 	sm.current.sendMessage("JOIN " + channelName)
 	// channel is added and set as current when server sends JOIN back
 }
+
+func (sm *ServerManager) newServer(args string)     {}
+func (sm *ServerManager) outputServers(args string) {}
 
 // only works when the first arg is the channel
 // extracts channel from arg list, substituting current channel if none was specified.
@@ -517,7 +564,7 @@ func main() {
 		input string
 		cmd   string
 	)
-	sm.ui.output("Initialized Corgi IRC client")
+	sm.ui.success("Initialized Corgi IRC client")
 	for {
 		// read in line from user
 		input = sm.ui.getMessageWithPrompt(
