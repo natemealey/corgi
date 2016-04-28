@@ -101,6 +101,7 @@ func NewIrcServer(socket string, nick string, user string, real string) (*IrcSer
 			socket:     socket,
 			initTime:   time.Now(),
 			updateTime: time.Now(),
+			nick:       nick,
 			channels:   make(map[string]*Channel)}
 		ic.setNick(nick)
 		ic.setUserReal(user, real)
@@ -108,10 +109,9 @@ func NewIrcServer(socket string, nick string, user string, real string) (*IrcSer
 	}
 }
 
-// TODO does this need other data?
 type Channel struct {
 	name       string
-	nicks      map[string]bool //basically acts as a set
+	nicks      map[string]bool // acts as a set
 	logs       []string
 	initTime   time.Time
 	updateTime time.Time
@@ -126,7 +126,6 @@ func NewChannel(channelName string) *Channel {
 }
 
 // container of all our IRC server metadata
-// TODO does this even make sense as a type?
 type ServerManager struct {
 	servers []*IrcServer
 	current *IrcServer // current socket
@@ -149,7 +148,6 @@ func (ic *IrcServer) sendMessage(msg string) {
 
 func (ic *IrcServer) setNick(newNick string) {
 	ic.sendMessage("NICK " + newNick)
-	ic.nick = newNick
 }
 
 func (ic *IrcServer) setUserReal(user string, real string) {
@@ -273,9 +271,8 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 		channelName = args[0]
 	}
 	if prefix != "" || command != "" {
-		// TODO this is potentially not great
 		if len(args) > 1 {
-			message = strings.Join(args[1:], " ")
+			message = args[len(args)-1]
 		}
 		sender := prefixToSender(prefix)
 		switch command {
@@ -300,14 +297,36 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 				ui.note(sender + " has quit.")
 				ic.currentChannel.nicks[sender] = false
 			}
+		case "NICK":
+			newNick := channelName
+			if ic.nick == sender {
+				ic.nick = newNick
+				// TODO re-render prompt
+			}
+			for _, channel := range ic.channels {
+				if channel.nicks[sender] {
+					if channel == ic.currentChannel {
+						ui.note(sender + " is now known as " + newNick)
+					}
+					channel.nicks[sender] = false
+					channel.nicks[newNick] = true
+				}
+			}
 		case "KICK":
+			victim := args[0]
+			ic.leaveChannel(channelName, victim)
+			if victim == ic.nick {
+				ui.note("You have been kicked from " + channelName + " by " + sender)
+			} else {
+				if ic.currentChannel.name == channelName {
+					ui.note(victim + " was kicked from " + channelName + " by " + sender)
+				}
+			}
 		case "353": // list of nicks
 			nicks := strings.Fields(message)
 			// get actual channel name
-			// TODO make sure params will be split this way always
-			params := strings.SplitN(line, " ", 6)
-			if len(params) == 6 {
-				channelName = strings.TrimSpace(params[4])
+			if len(args) > 2 {
+				channelName = args[2]
 			}
 			for _, nick := range nicks {
 				// discard operator prefixes
@@ -324,7 +343,7 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 		case "372": // MOTD body
 		case "376": // MOTD end
 		default:
-			ui.note(message)
+			ui.note(strings.Join(args[1:], " "))
 		}
 	}
 	return channelName
@@ -558,23 +577,32 @@ func (sm *ServerManager) outputNicks(args string) {
 
 func (sm *ServerManager) outputHelp(args string) {}
 
+func (sm *ServerManager) handleRawInput(input string) {
+	// split into command + args
+	if strings.HasPrefix(input, "/") {
+		cmd := strings.Fields(input)[0]
+		sm.processCommand(cmd[1:], strings.TrimSpace(strings.Replace(input, cmd, "", 1)))
+	} else {
+		sm.processCommand("", input)
+	}
+}
+
 func main() {
 	var (
 		sm    = InitWithServer()
 		input string
-		cmd   string
 	)
 	sm.ui.success("Initialized Corgi IRC client")
+	// read in args, if any
+	args := os.Args[1:]
+	sm.ui.note("Handling commands: " + strings.Join(args, ", "))
+	for _, arg := range args {
+		sm.handleRawInput(arg)
+	}
 	for {
 		// read in line from user
 		input = sm.ui.getMessageWithPrompt(
 			utils.Color.Magenta(sm.current.nick) + utils.Color.Blue("> "))
-		// split into command + args
-		if strings.HasPrefix(input, "/") {
-			cmd = strings.Fields(input)[0]
-			sm.processCommand(cmd[1:], strings.TrimSpace(strings.Replace(input, cmd, "", 1)))
-		} else {
-			sm.processCommand("", input)
-		}
+		sm.handleRawInput(input)
 	}
 }
