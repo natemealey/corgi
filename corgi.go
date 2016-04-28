@@ -313,7 +313,7 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 				}
 			}
 		case "KICK":
-			victim := args[0]
+			victim := channelName
 			ic.leaveChannel(channelName, victim)
 			if victim == ic.nick {
 				ui.note("You have been kicked from " + channelName + " by " + sender)
