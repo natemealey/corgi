@@ -8,6 +8,7 @@ import (
 	tp "net/textproto"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ type IrcUi struct {
 func NewIrcUi() *IrcUi {
 	panes := gp.NewGoPaneUi()
 	if panes.Root.Horiz(-4) {
+		panes.Root.Second.MakeEditable()
 		newUi := IrcUi{
 			panes:     panes,
 			inputBox:  panes.Root.Second,
@@ -34,9 +36,20 @@ func NewIrcUi() *IrcUi {
 	return nil
 }
 
+func (ui *IrcUi) Close() {
+	ui.panes.Close()
+}
+
 func (ui *IrcUi) render() {
-	ui.panes.Clear()
 	ui.panes.Root.Refresh()
+}
+
+func (ui *IrcUi) GetLine() string {
+	return ui.inputBox.GetLine()
+}
+
+func (ui *IrcUi) Alive() bool {
+	return ui.inputBox.IsAlive()
 }
 
 func (ui *IrcUi) getMessageWithPrompt(prompt string) string {
@@ -125,21 +138,6 @@ func NewChannel(channelName string) *Channel {
 		nicks:      make(map[string]bool)}
 }
 
-// container of all our IRC server metadata
-type ServerManager struct {
-	servers []*IrcServer
-	current *IrcServer // current socket
-	ui      *IrcUi
-}
-
-func NewServerManager() *ServerManager {
-	var sm ServerManager
-	// prepare for program termination
-	sm.handleTermination()
-	sm.ui = NewIrcUi()
-	return &sm
-}
-
 func (ic *IrcServer) sendMessage(msg string) {
 	fmt.Fprint(ic.conn.Writer.W, msg+"\r\n")
 	ic.conn.Writer.W.Flush()
@@ -147,6 +145,9 @@ func (ic *IrcServer) sendMessage(msg string) {
 }
 
 func (ic *IrcServer) setNick(newNick string) {
+	ic.nick = newNick
+	// TODO the nick isn't always set - see error cases at
+	// https://tools.ietf.org/html/rfc1459#section-4.1.2
 	ic.sendMessage("NICK " + newNick)
 }
 
@@ -281,7 +282,7 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 			if ic.nick == sender {
 				ui.clearOutput()
 			}
-			if ic.currentChannel.name == channelName {
+			if ic.currentChannel != nil && ic.currentChannel.name == channelName {
 				ui.note(sender + " has joined " + channelName)
 			}
 			ic.channels[channelName].nicks[sender] = true
@@ -291,6 +292,7 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 			}
 			ic.leaveChannel(channelName, sender)
 		case "PRIVMSG":
+			// TODO handle new private messages
 			ic.printMessage(sender, channelName, message, ui)
 		case "QUIT":
 			if ic.currentChannel != nil && ic.currentChannel.nicks[sender] {
@@ -300,6 +302,7 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 		case "NICK":
 			newNick := channelName
 			if ic.nick == sender {
+				ui.note("Your nickname is now " + newNick)
 				ic.nick = newNick
 				// TODO re-render prompt
 			}
@@ -367,6 +370,26 @@ func (ic *IrcServer) listen(ui *IrcUi) {
 
 func (ic *IrcServer) quit(message string) {
 	ic.sendMessage("QUIT :" + message)
+}
+
+// container of all our IRC server metadata
+type ServerManager struct {
+	servers []*IrcServer
+	current *IrcServer // current socket
+	ui      *IrcUi
+}
+
+func NewServerManager() *ServerManager {
+	var sm ServerManager
+	// prepare for program termination
+	sm.handleTermination()
+	sm.ui = NewIrcUi()
+	return &sm
+}
+
+// Must be called on program exit to clean up after UI
+func (sm *ServerManager) Close() {
+	sm.ui.Close()
 }
 
 // Adds a connection to the manager and sets it as the current server
@@ -451,6 +474,10 @@ func (sm *ServerManager) processCommand(cmd string, args string) {
 }
 
 func (sm *ServerManager) messageCurrent(args string) {
+	if sm.current == nil {
+		sm.ui.err("Not on any server!")
+		return
+	}
 	if sm.current.currentChannel == nil {
 		sm.ui.err("No current channel selected!")
 		return
@@ -475,6 +502,7 @@ func (sm *ServerManager) quitAll(args string) {
 	for _, ic := range sm.servers {
 		ic.quit("Quit command received")
 	}
+	sm.Close()
 	os.Exit(0)
 }
 func (sm *ServerManager) switchChannel(args string) {
@@ -503,7 +531,17 @@ func (sm *ServerManager) joinChannel(args string) {
 	// channel is added and set as current when server sends JOIN back
 }
 
-func (sm *ServerManager) newServer(args string)     {}
+func (sm *ServerManager) newServer(args string) {
+	strs := strings.Fields(args)
+	if len(strs) > 1 {
+		// TODO is there a better default port location?
+		// TODO handle
+		sm.addConnection(strs[0]+":"+strs[1], "", "corgi.def", "corgi.def")
+	} else if len(strs) > 0 {
+		sm.addConnection(strs[0]+":6667", "", "corgi.def", "corgi.def")
+	}
+
+}
 func (sm *ServerManager) outputServers(args string) {}
 
 // only works when the first arg is the channel
@@ -545,7 +583,11 @@ func (sm *ServerManager) setNick(args string) {
 		sm.ui.err("Nick cannot contain spaces!")
 		return
 	}
-	sm.current.setNick(newNick)
+	if sm.current != nil {
+		sm.current.setNick(newNick)
+	} else {
+		sm.ui.warn("Can't set nick, must connect to a server")
+	}
 }
 func (sm *ServerManager) outputChannels(args string) {
 	sm.ui.output(utils.Color.Blue("All connected channels on: ") + utils.Color.Magenta(sm.current.socket))
@@ -568,16 +610,20 @@ func (sm *ServerManager) outputNicks(args string) {
 		sm.ui.err("Couldn't look up channel '" + channelName + "'!")
 		return
 	}
-	nickList := ""
-	for nick, _ := range sm.current.channels[channelName].nicks {
-		nickList += nick + " "
+	nicks := make([]string, len(sm.current.channels[channelName].nicks))
+	idx := 0
+	for nick := range sm.current.channels[channelName].nicks {
+		nicks[idx] = nick
+		idx++
 	}
-	sm.ui.output(utils.Color.Blue("All nicks on "+channelName+": ") + utils.Color.Magenta(nickList))
+	sort.Strings(nicks)
+
+	sm.ui.output(utils.Color.Blue("All nicks on "+channelName+": ") + utils.Color.Magenta(strings.Join(nicks, " ")))
 }
 
 func (sm *ServerManager) outputHelp(args string) {}
 
-func (sm *ServerManager) handleRawInput(input string) {
+func (sm *ServerManager) handleUserInput(input string) {
 	// split into command + args
 	if strings.HasPrefix(input, "/") {
 		cmd := strings.Fields(input)[0]
@@ -589,20 +635,29 @@ func (sm *ServerManager) handleRawInput(input string) {
 
 func main() {
 	var (
-		sm    = InitWithServer()
+		sm    = NewServerManager()
 		input string
 	)
+	defer sm.Close()
 	sm.ui.success("Initialized Corgi IRC client")
 	// read in args, if any
 	args := os.Args[1:]
-	sm.ui.note("Handling commands: " + strings.Join(args, ", "))
-	for _, arg := range args {
-		sm.handleRawInput(arg)
+	if len(args) > 0 {
+		sm.ui.note("Handling commands: `" + strings.Join(args, "`, `") + "`")
 	}
-	for {
+	for _, arg := range args {
+		sm.handleUserInput(arg)
+	}
+	for sm.ui.Alive() {
 		// read in line from user
-		input = sm.ui.getMessageWithPrompt(
-			utils.Color.Magenta(sm.current.nick) + utils.Color.Blue("> "))
-		sm.handleRawInput(input)
+		/*if sm.current != nil {
+			input = sm.ui.getMessageWithPrompt(
+				utils.Color.Magenta(sm.current.nick) + utils.Color.Blue("> "))
+		} else {
+			input = sm.ui.getMessageWithPrompt(
+				utils.Color.Magenta("[not on any server]") + utils.Color.Blue("> "))
+		}*/
+		input = sm.ui.GetLine()
+		sm.handleUserInput(input)
 	}
 }
