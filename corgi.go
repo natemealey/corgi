@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	gp "github.com/natemealey/GoPanes"
 	"github.com/natemealey/corgi/utils"
@@ -346,6 +347,7 @@ func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
 		case "372": // MOTD body
 		case "376": // MOTD end
 		default:
+			// TODO filter by current channel
 			ui.note(strings.Join(args[1:], " "))
 		}
 	}
@@ -419,76 +421,63 @@ func (sm *ServerManager) handleTermination() {
 	}()
 }
 
-// if run as the only program, supply a simple command line interface
-// TODO this should probably be a more flexible init system
-func InitWithServer() *ServerManager {
-	var (
-		sm     = NewServerManager()
-		reader = bufio.NewReader(os.Stdin)
-		ready  = false
-	)
-	for !ready {
-		sm.ui.inputBox.Focus()
-		_, ready = sm.addConnection(
-			utils.ReadWithPrompt(utils.Color.Blue("Server name: "), reader),
-			utils.ReadWithPrompt(utils.Color.Blue("Nickname: "), reader),
-			utils.ReadWithPrompt(utils.Color.Blue("Username: "), reader),
-			utils.ReadWithPrompt(utils.Color.Blue("Real Name: "), reader))
-	}
-	// Send user input directly to IRC server
-	return sm
-}
 func (sm *ServerManager) processCommand(cmd string, args string) {
+	var err error
 	switch cmd {
 	case "":
-		sm.messageCurrent(args)
+		err = sm.messageCurrent(args)
 	case "msg":
-		sm.message(args)
+		err = sm.message(args)
 	case "away":
-		sm.away(args)
+		err = sm.away(args)
 	case "quit":
-		sm.quitAll(args)
+		err = sm.quitAll(args)
 	case "join":
-		sm.joinChannel(args)
+		err = sm.joinChannel(args)
 	case "part":
-		sm.partChannel(args)
+		err = sm.partChannel(args)
 	case "channel":
-		sm.switchChannel(args)
+		err = sm.switchChannel(args)
 	case "channels":
-		sm.outputChannels(args)
+		err = sm.outputChannels(args)
 	case "server":
-		sm.newServer(args)
+		err = sm.newServer(args)
 	case "servers":
-		sm.outputServers(args)
+		err = sm.outputServers(args)
 	case "nick":
-		sm.setNick(args)
+		err = sm.setNick(args)
 	case "nicks":
-		sm.outputNicks(args)
+		err = sm.outputNicks(args)
 	case "usr":
-		sm.setUser(args)
+		err = sm.setUser(args)
 	case "help":
-		sm.outputHelp(args)
+		err = sm.outputHelp(args)
 	default:
-		sm.ui.err(cmd + " is an unrecognized command!")
+		err = errors.New(cmd + " is an unrecognized command!")
+	}
+	if err != nil {
+		sm.ui.err(err.Error())
 	}
 }
 
-func (sm *ServerManager) messageCurrent(args string) {
+func (sm *ServerManager) messageCurrent(args string) error {
 	if sm.current == nil {
-		sm.ui.err("Not on any server!")
-		return
+		return errors.New("Not on any server!")
 	}
 	if sm.current.currentChannel == nil {
-		sm.ui.err("No current channel selected!")
-		return
+		return errors.New("No current channel selected!")
+
 	}
 	sm.message(sm.current.currentChannel.name + " " + args)
+	return nil
 }
-func (sm *ServerManager) message(args string) {
+func (sm *ServerManager) message(args string) error {
 	strs := strings.SplitN(args, " ", 2)
 	if len(strs) < 2 {
-		sm.ui.err("Must specify a channel and message text!")
-		return
+		return errors.New("Must specify a channel and message text!")
+	}
+	if sm.current == nil {
+		return errors.New("Not on any server!")
 	}
 	target := strs[0]
 	message := strs[1]
@@ -496,17 +485,22 @@ func (sm *ServerManager) message(args string) {
 	sm.current.sendMessage(line)
 	sm.current.printMessage(sm.current.nick, target, message, sm.ui)
 	sm.current.logLineToChannel(line, target)
+	return nil
 }
-func (sm *ServerManager) away(args string) {}
-func (sm *ServerManager) quitAll(args string) {
+func (sm *ServerManager) away(args string) error { return nil }
+func (sm *ServerManager) quitAll(args string) error {
 	for _, ic := range sm.servers {
 		ic.quit("Quit command received")
 	}
 	sm.Close()
 	os.Exit(0)
+	return errors.New("Failed to exit program")
 }
-func (sm *ServerManager) switchChannel(args string) {
+func (sm *ServerManager) switchChannel(args string) error {
 	newName := strings.TrimSpace(args)
+	if sm.current == nil {
+		return errors.New("Can't switch channels: must connect to a server")
+	}
 	for _, channel := range sm.current.channels {
 		if channel.name == newName {
 			sm.current.currentChannel = channel
@@ -515,34 +509,34 @@ func (sm *ServerManager) switchChannel(args string) {
 			for _, line := range channel.logs {
 				sm.current.handleLine(line, sm.ui)
 			}
-			sm.ui.success("Switched to " + newName)
-			return
+			return errors.New("Switched to " + newName)
 		}
 	}
-	sm.ui.err("No such channel " + newName + "!")
+	return errors.New("No such channel " + newName + "!")
 }
 
 // join just one channel
-func (sm *ServerManager) joinChannel(args string) {
+func (sm *ServerManager) joinChannel(args string) error {
 	// extract channel name
 	channelName := strings.Fields(args)[0]
 	sm.ui.note("Joining " + channelName + "...")
 	sm.current.sendMessage("JOIN " + channelName)
 	// channel is added and set as current when server sends JOIN back
+	return nil
 }
 
-func (sm *ServerManager) newServer(args string) {
+func (sm *ServerManager) newServer(args string) error {
 	strs := strings.Fields(args)
 	if len(strs) > 1 {
 		// TODO is there a better default port location?
-		// TODO handle
+		// TODO handle user/real name in a customizable way
 		sm.addConnection(strs[0]+":"+strs[1], "", "corgi.def", "corgi.def")
 	} else if len(strs) > 0 {
 		sm.addConnection(strs[0]+":6667", "", "corgi.def", "corgi.def")
 	}
-
+	return nil
 }
-func (sm *ServerManager) outputServers(args string) {}
+func (sm *ServerManager) outputServers(args string) error { return nil }
 
 // only works when the first arg is the channel
 // extracts channel from arg list, substituting current channel if none was specified.
@@ -562,34 +556,36 @@ func (sm *ServerManager) channelFromArgs(args string) (bool, string) {
 	return false, channelName
 }
 
-func (sm *ServerManager) partChannel(args string) {
+func (sm *ServerManager) partChannel(args string) error {
 	err, channelName := sm.channelFromArgs(args)
 	if err {
-		sm.ui.err("Cannot part: no active channel and no channel specified")
-		return
+		return errors.New("Cannot part: no active channel and no channel specified")
 	}
 	sm.current.sendMessage("PART " + channelName)
 	// channel is added and set as current when server sends JOIN back
+	return nil
 }
 
 // TODO is this even necessary?
-func (sm *ServerManager) setUser(args string) {}
-func (sm *ServerManager) setNick(args string) {
+func (sm *ServerManager) setUser(args string) error { return nil }
+func (sm *ServerManager) setNick(args string) error {
 	newNick := strings.TrimSpace(args)
 	if len(newNick) == 0 {
-		sm.ui.err("Must specify a nick!")
-		return
+		return errors.New("Must specify a nick!")
 	} else if strings.Contains(newNick, " ") {
-		sm.ui.err("Nick cannot contain spaces!")
-		return
+		return errors.New("Nick cannot contain spaces!")
 	}
 	if sm.current != nil {
 		sm.current.setNick(newNick)
+		return nil
 	} else {
-		sm.ui.warn("Can't set nick, must connect to a server")
+		return errors.New("Can't set nick, must connect to a server")
 	}
 }
-func (sm *ServerManager) outputChannels(args string) {
+func (sm *ServerManager) outputChannels(args string) error {
+	if sm.current == nil {
+		return errors.New("Can't output channels: must connect to a server")
+	}
 	sm.ui.output(utils.Color.Blue("All connected channels on: ") + utils.Color.Magenta(sm.current.socket))
 	// TODO this output isn't ordered - should we order by something?
 	for _, channel := range sm.current.channels {
@@ -599,16 +595,18 @@ func (sm *ServerManager) outputChannels(args string) {
 			sm.ui.output("  " + utils.Color.Yellow(channel.name))
 		}
 	}
+	return nil
 }
-func (sm *ServerManager) outputNicks(args string) {
+func (sm *ServerManager) outputNicks(args string) error {
+	if sm.current == nil {
+		return errors.New("Can't output nicks: must connect to a server")
+	}
 	err, channelName := sm.channelFromArgs(args)
 	if err {
-		sm.ui.err("Can't output nicks: no active channel and no channel specified")
-		return
+		return errors.New("Can't output nicks: no active channel and no channel specified")
 	}
 	if sm.current.channels[channelName] == nil {
-		sm.ui.err("Couldn't look up channel '" + channelName + "'!")
-		return
+		return errors.New("Couldn't look up channel '" + channelName + "'!")
 	}
 	nicks := make([]string, len(sm.current.channels[channelName].nicks))
 	idx := 0
@@ -619,9 +617,10 @@ func (sm *ServerManager) outputNicks(args string) {
 	sort.Strings(nicks)
 
 	sm.ui.output(utils.Color.Blue("All nicks on "+channelName+": ") + utils.Color.Magenta(strings.Join(nicks, " ")))
+	return nil
 }
 
-func (sm *ServerManager) outputHelp(args string) {}
+func (sm *ServerManager) outputHelp(args string) error { return nil }
 
 func (sm *ServerManager) handleUserInput(input string) {
 	// split into command + args
