@@ -499,7 +499,8 @@ func (sm *ServerManager) switchChannel(args string) error {
 			for _, line := range channel.logs {
 				sm.current.handleLine(line, sm.ui)
 			}
-			return errors.New("Switched to " + newName)
+			sm.ui.info("Switched to " + newName)
+			return nil
 		}
 	}
 	return errors.New("No such channel " + newName + "!")
