@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	gp "github.com/natemealey/GoPanes"
-	"github.com/natemealey/corgi/utils"
 	tp "net/textproto"
 	"os"
 	"os/signal"
@@ -23,7 +21,7 @@ type IrcUi struct {
 
 func NewIrcUi() *IrcUi {
 	panes := gp.NewGoPaneUi()
-	if panes.Root.Horiz(-4) {
+	if panes.Root.Horiz(-2) {
 		panes.Root.Second.MakeEditable()
 		newUi := IrcUi{
 			panes:     panes,
@@ -53,43 +51,35 @@ func (ui *IrcUi) Alive() bool {
 	return ui.inputBox.IsAlive()
 }
 
-func (ui *IrcUi) getMessageWithPrompt(prompt string) string {
-	ui.inputBox.Clear()
-	ui.panes.Root.Refresh()
-	ui.inputBox.Focus()
-	str := utils.ReadWithPrompt(prompt, bufio.NewReader(os.Stdin))
-	return str
-}
-
 func (ui *IrcUi) clearOutput() {
 	ui.outputBox.Clear()
 	ui.outputBox.Refresh()
 }
 
-func (ui *IrcUi) output(line string) {
-	ui.outputBox.AddLine(line)
+func (ui *IrcUi) output(colorStrs ...gp.ColorStr) {
+	ui.outputBox.AddLine(colorStrs)
 	ui.outputBox.Refresh()
 }
 
 // semantic sytax coloring
 func (ui *IrcUi) info(line string) {
-	ui.output(utils.Color.Blue(line))
+	ui.output(gp.Color.Blue(line))
 }
 
 func (ui *IrcUi) err(line string) {
-	ui.output(utils.Color.Red(line))
+	ui.output(gp.Color.Red(line))
 }
 
 func (ui *IrcUi) warn(line string) {
-	ui.output(utils.Color.Yellow(line))
+	ui.output(gp.Color.Yellow(line))
 }
 
 func (ui *IrcUi) success(line string) {
-	ui.output(utils.Color.Green(line))
+	ui.output(gp.Color.Green(line))
 }
 
 func (ui *IrcUi) note(line string) {
-	ui.output(utils.Color.DarkGray(line))
+	ui.output(gp.Color.DarkGray(line))
 }
 
 // all times are in local time
@@ -181,14 +171,14 @@ func (ic *IrcServer) printMessage(sender string, recipient string, msg string, u
 	}
 	// if it's a private message, output accordingly
 	if !strings.HasPrefix(recipient, "#") {
-		ui.output(utils.Color.Yellow(recipient) + " " +
-			utils.Color.Magenta("<"+sender+">") + " " +
-			utils.Color.Blue("[private]") + " " +
-			msg)
+		ui.output(gp.Color.Yellow(recipient+" "),
+			gp.Color.Magenta("<"+sender+"> "),
+			gp.Color.Blue("[private] "),
+			gp.Color.Default(msg))
 	} else if ic.currentChannel != nil && ic.currentChannel.name == recipient {
-		ui.output(utils.Color.Yellow(recipient) + " " +
-			utils.Color.Magenta("<"+sender+">") + " " +
-			msg)
+		ui.output(gp.Color.Yellow(recipient+" "),
+			gp.Color.Magenta("<"+sender+"> "),
+			gp.Color.Default(msg))
 	}
 }
 
@@ -586,13 +576,13 @@ func (sm *ServerManager) outputChannels(args string) error {
 	if sm.current == nil {
 		return errors.New("Can't output channels: must connect to a server")
 	}
-	sm.ui.output(utils.Color.Blue("All connected channels on: ") + utils.Color.Magenta(sm.current.socket))
+	sm.ui.output(gp.Color.Blue("All connected channels on: "), gp.Color.Magenta(sm.current.socket))
 	// TODO this output isn't ordered - should we order by something?
 	for _, channel := range sm.current.channels {
 		if sm.current.currentChannel == channel {
-			sm.ui.output("  " + utils.Color.Yellow(channel.name) + utils.Color.Green(" [active]"))
+			sm.ui.output(gp.Color.Yellow("  "+channel.name), gp.Color.Green(" [active]"))
 		} else {
-			sm.ui.output("  " + utils.Color.Yellow(channel.name))
+			sm.ui.output(gp.Color.Yellow("  " + channel.name))
 		}
 	}
 	return nil
@@ -616,7 +606,7 @@ func (sm *ServerManager) outputNicks(args string) error {
 	}
 	sort.Strings(nicks)
 
-	sm.ui.output(utils.Color.Blue("All nicks on "+channelName+": ") + utils.Color.Magenta(strings.Join(nicks, " ")))
+	sm.ui.output(gp.Color.Blue("All nicks on "+channelName+": "), gp.Color.Magenta(strings.Join(nicks, " ")))
 	return nil
 }
 
@@ -651,10 +641,10 @@ func main() {
 		// read in line from user
 		/*if sm.current != nil {
 			input = sm.ui.getMessageWithPrompt(
-				utils.Color.Magenta(sm.current.nick) + utils.Color.Blue("> "))
+				gp.Color.Magenta(sm.current.nick) + gp.Color.Blue("> "))
 		} else {
 			input = sm.ui.getMessageWithPrompt(
-				utils.Color.Magenta("[not on any server]") + utils.Color.Blue("> "))
+				gp.Color.Magenta("[not on any server]") + gp.Color.Blue("> "))
 		}*/
 		input = sm.ui.GetLine()
 		sm.handleUserInput(input)
