@@ -47,6 +47,10 @@ func (ui *IrcUi) GetLine() string {
 	return ui.inputBox.GetLine()
 }
 
+func (ui *IrcUi) ChangePrompt(colorStrs ...gp.ColorStr) {
+	ui.inputBox.ChangePrompt(colorStrs)
+}
+
 func (ui *IrcUi) Alive() bool {
 	return ui.inputBox.IsAlive()
 }
@@ -639,14 +643,27 @@ func main() {
 		sm.handleUserInput(arg)
 	}
 	for sm.ui.Alive() {
-		// read in line from user
-		/*if sm.current != nil {
-			input = sm.ui.getMessageWithPrompt(
-				gp.Color.Magenta(sm.current.nick) + gp.Color.Blue("> "))
+		// update prompt
+		// TODO do this somewhere else
+		if sm.current != nil {
+			channel := "[no channel]"
+			if sm.current.currentChannel != nil {
+				channel = sm.current.currentChannel.name
+			}
+			if sm.current.nick != "" {
+				sm.ui.ChangePrompt(
+					gp.Color.Yellow(channel),
+					gp.Color.Magenta(sm.current.nick), gp.Color.Blue("> "))
+			} else {
+				sm.ui.ChangePrompt(
+					gp.Color.Yellow(channel),
+					gp.Color.Magenta("[no nick]"), gp.Color.Blue("> "))
+			}
 		} else {
-			input = sm.ui.getMessageWithPrompt(
-				gp.Color.Magenta("[not on any server]") + gp.Color.Blue("> "))
-		}*/
+			sm.ui.ChangePrompt(
+				gp.Color.Magenta("[not on any server]"), gp.Color.Blue("> "))
+		}
+		// read in line from user
 		input = sm.ui.GetLine()
 		sm.handleUserInput(input)
 	}
