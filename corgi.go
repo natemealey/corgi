@@ -652,11 +652,11 @@ func main() {
 			}
 			if sm.current.nick != "" {
 				sm.ui.ChangePrompt(
-					gp.Color.Yellow(channel),
+					gp.Color.Yellow(channel+" "),
 					gp.Color.Magenta(sm.current.nick), gp.Color.Blue("> "))
 			} else {
 				sm.ui.ChangePrompt(
-					gp.Color.Yellow(channel),
+					gp.Color.Yellow(channel+" "),
 					gp.Color.Magenta("[no nick]"), gp.Color.Blue("> "))
 			}
 		} else {
