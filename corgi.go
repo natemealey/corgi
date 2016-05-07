@@ -251,119 +251,6 @@ func (ic *IrcServer) logLineToChannel(line, channelName string) {
 	}
 }
 
-// TODO this is a disgustingly long function
-// TODO remove necessity of ui param and return a string to be printed
-// by whatever to improve decoupling
-// returns the name of the channel that send the line
-func (ic *IrcServer) handleLine(line string, ui *IrcUi) string {
-	// first, append the line to the logs
-	var (
-		channelName string
-		message     string
-	)
-	// TODO handle taken nick, MOTD end
-	prefix, command, args := parseIrcMessage(line)
-	if len(args) > 0 {
-		channelName = args[0]
-	}
-	if prefix != "" || command != "" {
-		if len(args) > 1 {
-			message = args[len(args)-1]
-		}
-		sender := prefixToSender(prefix)
-		switch command {
-		case "JOIN":
-			ic.joinChannel(channelName, sender)
-			if ic.nick == sender {
-				ui.clearOutput()
-			}
-			if ic.currentChannel != nil && ic.currentChannel.name == channelName {
-				ui.note(sender + " has joined " + channelName)
-			}
-			ic.channels[channelName].nicks[sender] = true
-		case "PART":
-			if ic.currentChannel.name == channelName {
-				ui.note(sender + " has parted " + channelName)
-			}
-			ic.leaveChannel(channelName, sender)
-		case "PRIVMSG":
-			// TODO handle new private messages
-			ic.printMessage(sender, channelName, message, ui)
-		case "QUIT":
-			if ic.currentChannel != nil && ic.currentChannel.nicks[sender] {
-				ui.note(sender + " has quit.")
-				ic.currentChannel.nicks[sender] = false
-			}
-		case "NICK":
-			newNick := channelName
-			if ic.nick == sender {
-				ui.note("Your nickname is now " + newNick)
-				ic.nick = newNick
-				// TODO re-render prompt
-			}
-			for _, channel := range ic.channels {
-				if channel.nicks[sender] {
-					if channel == ic.currentChannel {
-						ui.note(sender + " is now known as " + newNick)
-					}
-					channel.nicks[sender] = false
-					channel.nicks[newNick] = true
-				}
-			}
-		case "KICK":
-			victim := channelName
-			ic.leaveChannel(channelName, victim)
-			if victim == ic.nick {
-				ui.note("You have been kicked from " + channelName + " by " + sender)
-			} else {
-				if ic.currentChannel.name == channelName {
-					ui.note(victim + " was kicked from " + channelName + " by " + sender)
-				}
-			}
-		case "353": // list of nicks
-			nicks := strings.Fields(message)
-			// get actual channel name
-			if len(args) > 2 {
-				channelName = args[2]
-			}
-			for _, nick := range nicks {
-				// discard operator prefixes
-				if strings.HasPrefix(nick, "+") || strings.HasPrefix(nick, "@") {
-					nick = nick[1:]
-				}
-				// add the nick to the channel's nick list
-				if ic.channels[channelName] != nil {
-					ic.channels[channelName].nicks[nick] = true
-				}
-			}
-		case "366": // End of nicks
-		case "375": // MOTD start
-		case "372": // MOTD body
-		case "376": // MOTD end
-		default:
-			// TODO filter by current channel
-			ui.note(strings.Join(args[1:], " "))
-		}
-	}
-	return channelName
-}
-
-// this should be run in a goroutine since messages can happen any time
-// TODO is passing the UI pointer sensible?
-func (ic *IrcServer) listen(ui *IrcUi) {
-	var channelName string
-	var line string
-	for err := error(nil); err == nil; line, err = ic.conn.R.ReadString('\n') {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "PING") {
-			ic.sendMessage(strings.Replace(line, "PING", "PONG", 1))
-		} else {
-			channelName = ic.handleLine(line, ui)
-			ic.logLineToChannel(line, channelName)
-		}
-	}
-}
-
 func (ic *IrcServer) quit(message string) {
 	ic.sendMessage("QUIT :" + message)
 }
@@ -388,6 +275,130 @@ func (sm *ServerManager) Close() {
 	sm.ui.Close()
 }
 
+// TODO this is a disgustingly long function
+// TODO should this just return a string to be printed instead of printing?
+// by whatever to improve decoupling
+// returns the name of the channel that send the line
+func (sm *ServerManager) handleLine(line string, ic *IrcServer) string {
+	// first, append the line to the logs
+	var (
+		channelName string
+		message     string
+	)
+	// TODO handle taken nick, MOTD end
+	prefix, command, args := parseIrcMessage(line)
+	if len(args) > 0 {
+		channelName = args[0]
+	}
+	if prefix != "" || command != "" {
+		isCurrent := (sm.current == ic && ic.currentChannel != nil && ic.currentChannel.name == channelName)
+		if len(args) > 1 {
+			message = args[len(args)-1]
+		}
+		sender := prefixToSender(prefix)
+		switch command {
+		case "JOIN":
+			ic.joinChannel(channelName, sender)
+			if ic.nick == sender {
+				sm.ui.clearOutput()
+			}
+			if isCurrent {
+				sm.ui.note(sender + " has joined " + channelName)
+			}
+			ic.channels[channelName].nicks[sender] = true
+		case "PART":
+			if isCurrent {
+				sm.ui.note(sender + " has parted " + channelName)
+			}
+			ic.leaveChannel(channelName, sender)
+		case "PRIVMSG":
+			// TODO handle new private messages
+			if isCurrent {
+				ic.printMessage(sender, channelName, message, sm.ui)
+			}
+		case "QUIT":
+			if ic.currentChannel != nil && ic.currentChannel.nicks[sender] {
+				sm.ui.note(sender + " has quit.")
+				ic.currentChannel.nicks[sender] = false
+			}
+		case "NICK":
+			newNick := channelName
+			if ic.nick == sender {
+				sm.ui.note("Your nickname is now " + newNick)
+				ic.nick = newNick
+				// TODO re-render prompt
+			}
+			for _, channel := range ic.channels {
+				if channel.nicks[sender] {
+					if isCurrent {
+						sm.ui.note(sender + " is now known as " + newNick)
+					}
+					channel.nicks[sender] = false
+					channel.nicks[newNick] = true
+				}
+			}
+		case "KICK":
+			victim := channelName
+			ic.leaveChannel(channelName, victim)
+			if victim == ic.nick {
+				sm.ui.note("You have been kicked from " + channelName + " by " + sender)
+			} else {
+				if isCurrent {
+					sm.ui.note(victim + " was kicked from " + channelName + " by " + sender)
+				}
+			}
+		case "353": // list of nicks
+			nicks := strings.Fields(message)
+			// get actual channel name
+			if len(args) > 2 {
+				channelName = args[2]
+			}
+			for _, nick := range nicks {
+				// discard operator prefixes
+				if strings.HasPrefix(nick, "+") || strings.HasPrefix(nick, "@") {
+					nick = nick[1:]
+				}
+				// add the nick to the channel's nick list
+				if ic.channels[channelName] != nil {
+					ic.channels[channelName].nicks[nick] = true
+				}
+			}
+		case "366": // End of nicks
+		case "375": // MOTD start
+		case "372": // MOTD body
+		case "376": // MOTD end
+		default:
+			// TODO make sure blank channel should always be output
+			if isCurrent || channelName == "" {
+				sm.ui.note(strings.Join(args[1:], " "))
+			}
+		}
+	}
+	return channelName
+}
+
+// this should be run in a goroutine since messages can happen any time
+// TODO is passing the UI pointer sensible?
+func (sm *ServerManager) listen(ic *IrcServer) {
+	var (
+		channelName string
+		rawLine     string
+		line        string
+	)
+	for err := error(nil); err == nil && ic != nil; rawLine, err = ic.conn.R.ReadString('\n') {
+		line = strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "PING") {
+			ic.sendMessage(strings.Replace(line, "PING", "PONG", 1))
+		} else if err != nil {
+			sm.ui.warn("Disconnected from " + ic.socket + " with error `" + err.Error() + "`")
+			// TODO disconnect
+		} else {
+			channelName = sm.handleLine(line, ic)
+			ic.logLineToChannel(line, channelName)
+		}
+	}
+}
+
 // Adds a connection to the manager and sets it as the current server
 func (sm *ServerManager) addConnection(socket string, nick string, user string, real string) (*IrcServer, bool) {
 	// add the connection to the conns map
@@ -399,7 +410,7 @@ func (sm *ServerManager) addConnection(socket string, nick string, user string, 
 		sm.servers = append(sm.servers, ic)
 		sm.current = ic
 		// start the listen thread
-		go ic.listen(sm.ui)
+		go sm.listen(ic)
 		return ic, true
 	}
 }
@@ -435,7 +446,11 @@ func (sm *ServerManager) processCommand(cmd string, args string) {
 	case "channels":
 		err = sm.outputChannels(args)
 	case "server":
+		err = sm.switchServer(args)
+	case "connect":
 		err = sm.newServer(args)
+	case "disconnect":
+		err = sm.disconnectServer(args)
 	case "servers":
 		err = sm.outputServers(args)
 	case "nick":
@@ -501,7 +516,7 @@ func (sm *ServerManager) switchChannel(args string) error {
 			channel.updateTime = time.Now()
 			sm.ui.clearOutput()
 			for _, line := range channel.logs {
-				sm.current.handleLine(line, sm.ui)
+				sm.handleLine(line, sm.current)
 			}
 			sm.ui.info("Switched to " + newName)
 			return nil
@@ -522,6 +537,7 @@ func (sm *ServerManager) joinChannel(args string) error {
 
 func (sm *ServerManager) newServer(args string) error {
 	strs := strings.Fields(args)
+	// TODO check if server already exists
 	if len(strs) > 1 {
 		// TODO is there a better default port location?
 		// TODO handle user/real name in a customizable way
@@ -531,7 +547,80 @@ func (sm *ServerManager) newServer(args string) error {
 	}
 	return nil
 }
-func (sm *ServerManager) outputServers(args string) error { return nil }
+func (sm *ServerManager) switchServer(args string) error {
+	strs := strings.Fields(args)
+	if len(strs) != 1 {
+		return errors.New("Must provide a single server name!")
+	}
+	// TODO partial matches
+	for _, server := range sm.servers {
+		if server.socket == strs[0] {
+			sm.current = server
+			return nil
+		}
+	}
+	return errors.New("`" + strs[0] + "` not found! Enter `/servers` for available servers.")
+}
+
+func (sm *ServerManager) disconnectServer(args string) error {
+	strs := strings.Fields(args)
+	if len(strs) > 1 {
+		return errors.New("Must provide a single server name!")
+	}
+	var serverName string
+	if len(strs) == 1 {
+		serverName = strs[0]
+	} else if sm.current == nil {
+		return errors.New("Must be connected to a server to disconnect!")
+	} else {
+		serverName = sm.current.socket
+	}
+	// TODO partial matches
+	for idx, server := range sm.servers {
+		if server.socket == serverName {
+			if len(sm.servers)-1 > idx {
+				sm.servers = append(sm.servers[:idx], sm.servers[idx+1])
+			} else {
+				sm.servers = sm.servers[:idx]
+			}
+			if sm.current == server {
+				sm.current = nil
+			}
+
+			sm.ui.warn("Disconnected from " + serverName)
+			return nil
+		}
+	}
+	return errors.New("`" + serverName + "` not found! Enter `/servers` for available servers.")
+}
+
+func (sm *ServerManager) outputServers(args string) error {
+	if len(sm.servers) > 0 {
+		sm.ui.output(gp.Color.Blue("All connected servers:"))
+		for _, server := range sm.servers {
+			message := []gp.ColorStr{gp.Color.Magenta(server.socket)}
+			if server == sm.current {
+				message = append(message, gp.Color.Green(" [active]"))
+			}
+			message = append(message, gp.Color.Blue(" as"))
+			if server.nick == "" {
+				message = append(message, gp.Color.Magenta(" [no nick]"))
+			} else {
+				message = append(message, gp.Color.Magenta(" "+server.nick))
+			}
+			if server.currentChannel != nil {
+				message = append(
+					message,
+					gp.Color.Blue(" on"),
+					gp.Color.Magenta(" "+server.currentChannel.name))
+			}
+			sm.ui.output(message...)
+		}
+	} else {
+		sm.ui.output(gp.Color.Blue("Not connected to any servers"))
+	}
+	return nil
+}
 
 // only works when the first arg is the channel
 // extracts channel from arg list, substituting current channel if none was specified.
