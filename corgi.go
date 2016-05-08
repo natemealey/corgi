@@ -23,6 +23,7 @@ func NewIrcUi() *IrcUi {
 	panes := gp.NewGoPaneUi()
 	if panes.Root.Horiz(-2) {
 		panes.Root.Second.MakeEditable()
+		panes.FocusPane(panes.Root.Second)
 		newUi := IrcUi{
 			panes:     panes,
 			inputBox:  panes.Root.Second,
